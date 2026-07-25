@@ -234,19 +234,6 @@ Starts the audio path explicitly.
 
 Requests a stop of the audio path.
 
-.. _esp_audio_stack-stop_and_wait_action:
-
-``esp_audio_stack.stop_and_wait`` Action
-----------------------------------------
-
-Stops the audio path and blocks the automation until teardown completes.
-
-.. code-block:: yaml
-
-    on_...:
-      - esp_audio_stack.stop_and_wait: audio_stack
-      - deep_sleep.enter: sleeper
-
 .. _esp_audio_stack-is_idle_condition:
 
 ``esp_audio_stack.is_idle`` Condition

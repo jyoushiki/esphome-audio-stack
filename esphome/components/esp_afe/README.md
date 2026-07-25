@@ -353,7 +353,7 @@ select:
     optimistic: false           # do NOT auto-publish; we publish the live mode below
     restore_value: false        # HA mirrors boot config; it does not choose the boot mode
     set_action:
-      - esp_audio_stack.stop_and_wait: audio_stack
+      - esp_audio_stack.stop: audio_stack
       - wait_until:
           condition:
             esp_audio_stack.is_idle: audio_stack
@@ -517,7 +517,7 @@ select:
     optimistic: false
     restore_value: false
     set_action:
-      - esp_audio_stack.stop_and_wait: audio_stack
+      - esp_audio_stack.stop: audio_stack
       - wait_until:
           condition:
             esp_audio_stack.is_idle: audio_stack

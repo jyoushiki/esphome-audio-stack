@@ -150,16 +150,6 @@ on_...:
 
 Requests a stop of the audio path.
 
-### `esp_audio_stack.stop_and_wait`
-
-Stops the audio path and blocks the automation until teardown completes.
-
-```yaml
-on_...:
-  - esp_audio_stack.stop_and_wait: audio_stack
-  - deep_sleep.enter: sleeper
-```
-
 ## Condition
 
 ### `esp_audio_stack.is_idle`

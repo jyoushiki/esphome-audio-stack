@@ -191,8 +191,9 @@ void ESPAudioStack::update_hot_output_volume_() {
   }
 #endif
   if (previous != combined_q31) {
-    ESP_LOGD(TAG, "Master volume: output_q31=%" PRId32 " master_q31=%" PRId32 " hot_q31=%" PRId32
-                  " linear=%.3f hw_master=%s previous_q31=%" PRId32,
+    ESP_LOGD(TAG,
+             "Master volume: output_q31=%" PRId32 " master_q31=%" PRId32 " hot_q31=%" PRId32
+             " linear=%.3f hw_master=%s previous_q31=%" PRId32,
              output_q31, master_q31, combined_q31, linear, hardware_master ? "yes" : "no", previous);
   }
 }
@@ -231,7 +232,7 @@ void ESPAudioStack::update_runtime_state_() {
     return;
   const char *state = runtime_state_to_string(next);
   ESP_LOGD(TAG, "Runtime state: %s", state);
-  this->state_trigger_.trigger(std::string(state));
+  this->state_callback_.call(std::string(state));
 }
 
 const char *ESPAudioStack::i2s_hardware_state_to_string(I2SHardwareState state) {
@@ -1438,12 +1439,11 @@ void ESPAudioStack::start() {
     ESP_LOGD(TAG, "TDM hardware reference - slot %u is echo ref", this->tdm_ref_slot_);
   }
   if (this->processor_ != nullptr && this->has_mic_consumers_.load(std::memory_order_relaxed)) {
-    this->wait_audio_task_active_(50);
     this->processor_->set_processing_active(true);
   }
 #endif
 
-  this->start_trigger_.trigger();
+  this->start_callback_.call();
   ESP_LOGI(TAG, "Audio stack started");
 }
 
@@ -1457,7 +1457,7 @@ void ESPAudioStack::stop() {
   // Consumers stay registered across stop()/start() so the mic path is
   // reconnected automatically after an internal restart (frame_spec change).
   if (this->speaker_running_.exchange(false, std::memory_order_relaxed)) {
-    this->speaker_idle_trigger_.trigger();
+    this->speaker_idle_callback_.call();
     this->update_runtime_state_();
   }
 #ifdef USE_AUDIO_PROCESSOR
@@ -1466,28 +1466,12 @@ void ESPAudioStack::stop() {
   }
 #endif
   this->audio_stack_running_.store(false, std::memory_order_relaxed);
-  this->idle_trigger_.trigger();
+  this->idle_callback_.call();
 
   // Defer I2S deletion to loop(): polling audio_task_idle_ here would block
   // the main task for up to 600 ms (often >60 ms), starving network/UI/LVGL.
   // loop() picks this up on the next tick once the audio task has parked.
   this->teardown_pending_.store(true, std::memory_order_relaxed);
-}
-
-bool ESPAudioStack::stop_and_wait(uint32_t timeout_ms) {
-  this->stop();
-
-  if (!this->wait_audio_task_idle_(timeout_ms)) {
-    ESP_LOGW(TAG, "Timed out waiting for audio task to stop before maintenance");
-    return false;
-  }
-
-  if (this->teardown_pending_.load(std::memory_order_relaxed)) {
-    this->deinit_i2s_();
-    this->teardown_pending_.store(false, std::memory_order_relaxed);
-    ESP_LOGI(TAG, "Audio stack stopped synchronously");
-  }
-  return true;
 }
 
 bool ESPAudioStack::register_mic_consumer(void *token) {
@@ -1520,7 +1504,7 @@ bool ESPAudioStack::register_mic_consumer(void *token) {
   }
   if (first_consumer) {
     ESP_LOGI(TAG, "Mic consumer registered (token=%p), mic path active (consumers=%zu)", token, count_after);
-    this->mic_start_trigger_.trigger();
+    this->mic_start_callback_.call();
     // If the stack is already running, wake the processor immediately. If this
     // consumer is also starting the stack, start() will wake the audio task
     // first and then enable the processor so AFE has input frames available.
@@ -1568,7 +1552,7 @@ void ESPAudioStack::unregister_mic_consumer(void *token) {
   }
   if (last_consumer_gone) {
     ESP_LOGI(TAG, "Last mic consumer removed (token=%p), mic path idle", token);
-    this->mic_idle_trigger_.trigger();
+    this->mic_idle_callback_.call();
     // Tell the audio processor it can suspend background work until a new
     // consumer arrives. Without this hint esp_afe's GMF pipeline/task (and
     // the esp-sr internal worker on Core 1) keep cycling on every frame
@@ -1608,14 +1592,14 @@ void ESPAudioStack::start_speaker() {
 #endif
   }
   if (!this->speaker_running_.exchange(true, std::memory_order_relaxed)) {
-    this->speaker_start_trigger_.trigger();
+    this->speaker_start_callback_.call();
     this->update_runtime_state_();
   }
 }
 
 void ESPAudioStack::stop_speaker() {
   if (this->speaker_running_.exchange(false, std::memory_order_relaxed)) {
-    this->speaker_idle_trigger_.trigger();
+    this->speaker_idle_callback_.call();
     this->update_runtime_state_();
   }
   // Request audio task to reset ring buffers (avoids concurrent access).

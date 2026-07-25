@@ -70,3 +70,43 @@ def test_idle_tx_completion_overflow_preserves_full_duplex_capture() -> None:
     assert "self->tx_completion_desync_ = true" in callback
     assert "self->tx_completion_idle_event_drops_.fetch_add" in callback
     assert "Discarded %u idle TX completion events" in cpp
+
+
+def test_speaker_output_callbacks_follow_i2s_completion_not_buffer_acceptance() -> None:
+    """Sendspin/mixer timing must advance only after DMA reports playback."""
+    stack_cpp = read("esp_audio_stack.cpp")
+    pipeline_cpp = read("audio_pipeline.cpp")
+    speaker_cpp = read("speaker/esp_audio_stack_speaker.cpp")
+
+    dma_callback = stack_cpp[
+        stack_cpp.index("bool IRAM_ATTR ESPAudioStack::tx_on_sent_callback") :
+        stack_cpp.index("bool ESPAudioStack::prepare_tx_completion_tracking_")
+    ]
+    completion_drain = stack_cpp[
+        stack_cpp.index("void ESPAudioStack::drain_tx_completion_events_") :
+        stack_cpp.index("bool ESPAudioStack::queue_tx_completion_record_")
+    ]
+    dma_write = pipeline_cpp[
+        pipeline_cpp.index("bool ESPAudioStack::write_tx_dma_blocks_") :
+        pipeline_cpp.index("void ESPAudioStack::process_tx_clock_only_")
+    ]
+    public_play = speaker_cpp[
+        speaker_cpp.index("size_t ESPAudioStackSpeaker::play(const uint8_t *data, size_t length)") :
+        speaker_cpp.index("bool ESPAudioStackSpeaker::has_buffered_data()")
+    ]
+
+    assert "add_speaker_output_callback" in speaker_cpp
+    assert "audio_output_callback_.call(frames, timestamp)" in speaker_cpp
+    assert "xQueueSendToBackFromISR" in dma_callback
+    assert "dispatch_speaker_output_callbacks_" in completion_drain
+    assert "record.real_frames" in completion_drain
+    assert "record.trailing_silence_frames" in completion_drain
+
+    # Every real write is paired with its completion record before submission
+    # to IDF. Merely accepting bytes into the public speaker buffer must not
+    # advance Sendspin/mixer playback time.
+    assert dma_write.index("queue_tx_completion_record_(record)") < dma_write.index(
+        "write_tx_frame_(ctx, bytes + offset"
+    )
+    assert "dispatch_speaker_output_callbacks_" not in dma_write
+    assert "audio_output_callback_" not in public_play

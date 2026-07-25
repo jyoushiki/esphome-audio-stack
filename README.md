@@ -538,7 +538,6 @@ Actions and conditions:
 |---|---|
 | `esp_audio_stack.start` | Start the audio path explicitly. |
 | `esp_audio_stack.stop` | Request a stop. |
-| `esp_audio_stack.stop_and_wait` | Stop and wait for teardown. |
 | `esp_audio_stack.is_idle` | Condition true when the stack is idle. |
 
 Runtime entities:

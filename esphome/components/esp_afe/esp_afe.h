@@ -103,7 +103,7 @@ using esp_audio_stack::ProcessorTelemetry;
 ///      normal operation on the next frame.
 ///
 /// This avoids blocking the consumer's audio task on any global mutex.
-class EspAfe : public Component, public AudioProcessor {
+class EspAfe final : public Component, public AudioProcessor {
  public:
   void setup() override;
   void dump_config() override;
@@ -510,7 +510,7 @@ class AfeSwitchBase : public switch_::Switch, public Component, public Parented<
 };
 
 // Switch platform classes
-class AfeAecSwitch : public AfeSwitchBase {
+class AfeAecSwitch final : public AfeSwitchBase {
  public:
   void write_state(bool state) override {
     if (this->parent_ == nullptr)
@@ -527,7 +527,7 @@ class AfeAecSwitch : public AfeSwitchBase {
   void apply_initial_state(bool state) override { this->parent_->set_aec_enabled(state); }
 };
 
-class AfeNsSwitch : public AfeSwitchBase {
+class AfeNsSwitch final : public AfeSwitchBase {
  public:
   void write_state(bool state) override {
     if (this->parent_ == nullptr)
@@ -544,7 +544,7 @@ class AfeNsSwitch : public AfeSwitchBase {
   void apply_initial_state(bool state) override { this->parent_->set_ns_enabled(state); }
 };
 
-class AfeVadSwitch : public AfeSwitchBase {
+class AfeVadSwitch final : public AfeSwitchBase {
  public:
   void write_state(bool state) override {
     if (this->parent_ == nullptr)
@@ -561,7 +561,7 @@ class AfeVadSwitch : public AfeSwitchBase {
   void apply_initial_state(bool state) override { this->parent_->set_vad_enabled(state); }
 };
 
-class AfeAgcSwitch : public AfeSwitchBase {
+class AfeAgcSwitch final : public AfeSwitchBase {
  public:
   void write_state(bool state) override {
     if (this->parent_ == nullptr)
@@ -580,7 +580,9 @@ class AfeAgcSwitch : public AfeSwitchBase {
 #endif  // USE_SWITCH
 
 #ifdef USE_BINARY_SENSOR
-class AfeVadBinarySensor : public binary_sensor::BinarySensor, public PollingComponent, public Parented<EspAfe> {
+class AfeVadBinarySensor final : public binary_sensor::BinarySensor,
+                                 public PollingComponent,
+                                 public Parented<EspAfe> {
  public:
   float get_setup_priority() const override { return setup_priority::DATA; }
 
@@ -599,7 +601,7 @@ class AfeVadBinarySensor : public binary_sensor::BinarySensor, public PollingCom
 #endif  // USE_BINARY_SENSOR
 
 #ifdef USE_SENSOR
-class AfeInputVolumeSensor : public sensor::Sensor, public PollingComponent, public Parented<EspAfe> {
+class AfeInputVolumeSensor final : public sensor::Sensor, public PollingComponent, public Parented<EspAfe> {
  public:
   float get_setup_priority() const override { return setup_priority::DATA; }
 
@@ -610,7 +612,7 @@ class AfeInputVolumeSensor : public sensor::Sensor, public PollingComponent, pub
   }
 };
 
-class AfeOutputRmsSensor : public sensor::Sensor, public PollingComponent, public Parented<EspAfe> {
+class AfeOutputRmsSensor final : public sensor::Sensor, public PollingComponent, public Parented<EspAfe> {
  public:
   float get_setup_priority() const override { return setup_priority::DATA; }
 
