@@ -1643,7 +1643,11 @@ bool ESPAudioStack::write_tx_dma_blocks_(AudioTaskCtx &ctx, void *tx_data, size_
     }
     remaining_real_frames -= real_frames;
   }
-  return this->write_tx_frame_(ctx, tx_data, tx_bytes);
+  if (!this->write_tx_frame_(ctx, tx_data, tx_bytes)) {
+    this->mark_tx_completion_desync_("Codec TX write failed after reserving DMA completion records");
+    return false;
+  }
+  return true;
 #else
   for (size_t offset = 0; offset < tx_bytes; offset += this->tx_completion_dma_buffer_bytes_) {
     const uint32_t real_frames = std::min(remaining_real_frames, this->tx_completion_dma_frames_);
@@ -1654,6 +1658,7 @@ bool ESPAudioStack::write_tx_dma_blocks_(AudioTaskCtx &ctx, void *tx_data, size_
       return false;
     }
     if (!this->write_tx_frame_(ctx, bytes + offset, this->tx_completion_dma_buffer_bytes_)) {
+      this->mark_tx_completion_desync_("I2S TX write failed after reserving a DMA completion record");
       return false;
     }
     remaining_real_frames -= real_frames;

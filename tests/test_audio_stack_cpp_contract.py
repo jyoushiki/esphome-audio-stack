@@ -110,3 +110,23 @@ def test_speaker_output_callbacks_follow_i2s_completion_not_buffer_acceptance() 
     )
     assert "dispatch_speaker_output_callbacks_" not in dma_write
     assert "audio_output_callback_" not in public_play
+
+
+def test_failed_tx_write_cannot_leave_stale_completion_metadata() -> None:
+    """A reserved DMA record must never be consumed by a later successful write."""
+    pipeline_cpp = read("audio_pipeline.cpp")
+    dma_write = pipeline_cpp[
+        pipeline_cpp.index("bool ESPAudioStack::write_tx_dma_blocks_") :
+        pipeline_cpp.index("void ESPAudioStack::process_tx_clock_only_")
+    ]
+
+    # The record must remain queued before the blocking IDF write: on_sent may
+    # run before i2s_channel_write() returns. If the write then fails, however,
+    # tracking is irrecoverably ambiguous and the pipeline must stop instead of
+    # letting a later DMA completion consume stale metadata.
+    assert dma_write.index("queue_tx_completion_record_(record)") < dma_write.index(
+        "write_tx_frame_(ctx, bytes + offset"
+    )
+    assert dma_write.count("mark_tx_completion_desync_") == 2
+    assert "if (!this->write_tx_frame_(ctx, tx_data, tx_bytes))" in dma_write
+    assert "if (!this->write_tx_frame_(ctx, bytes + offset" in dma_write

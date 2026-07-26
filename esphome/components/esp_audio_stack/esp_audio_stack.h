@@ -614,6 +614,7 @@ class ESPAudioStack final : public Component {
   void drain_tx_completion_events_();
   void reset_tx_completion_tracking_();
   bool queue_tx_completion_record_(const TxCompletionRecord &record);
+  void mark_tx_completion_desync_(const char *reason);
   void dispatch_speaker_output_callbacks_(uint32_t frames, int64_t timestamp);
 
 #ifdef USE_ESP_AUDIO_STACK_MONO_REF

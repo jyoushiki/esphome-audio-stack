@@ -1360,6 +1360,13 @@ bool ESPAudioStack::queue_tx_completion_record_(const TxCompletionRecord &record
   return true;
 }
 
+void ESPAudioStack::mark_tx_completion_desync_(const char *reason) {
+  ESP_LOGE(TAG, "%s; stopping audio stack to preserve TX completion ordering", reason);
+  this->tx_completion_desync_ = true;
+  this->has_i2s_error_.store(true, std::memory_order_relaxed);
+  this->audio_stack_running_.store(false, std::memory_order_relaxed);
+}
+
 bool ESPAudioStack::wait_audio_task_state_(bool idle, uint32_t timeout_ms) {
   if (this->audio_task_idle_.load(std::memory_order_relaxed) == idle) {
     return true;
