@@ -56,6 +56,21 @@ class CapsRingBuffer final : public ring_buffer::RingBuffer {
                                    bool write_partial = true);
   BaseType_t reset();
 
+#ifdef ESP_AFE_RING_INTEGRITY_DEBUG
+  bool debug_metadata_valid(RingbufferType_t expected_type) const {
+    const auto expected_handle = reinterpret_cast<RingbufHandle_t>(const_cast<StaticRingbuffer_t *>(&this->structure_));
+    return this->handle_ == expected_handle && this->storage_ != nullptr && this->size_ > 0 &&
+           this->type_ == expected_type;
+  }
+  RingbufHandle_t debug_handle() const { return this->handle_; }
+  RingbufHandle_t debug_expected_handle() const {
+    return reinterpret_cast<RingbufHandle_t>(const_cast<StaticRingbuffer_t *>(&this->structure_));
+  }
+  const void *debug_storage() const { return this->storage_; }
+  size_t debug_size() const { return this->size_; }
+  RingbufferType_t debug_type() const { return this->type_; }
+#endif
+
  protected:
   bool discard_bytes_(size_t discard_bytes);
 

@@ -371,12 +371,18 @@ bool EspAfe::build_instance_(AfeInstance *instance) {
 
     const size_t feed_bytes =
         static_cast<size_t>(feed_chunksize) * static_cast<size_t>(total_channels) * sizeof(int16_t);
+#ifdef ESP_AFE_RING_INTEGRITY_DEBUG
+    const size_t feed_allocation_bytes = feed_bytes + kDirectFeedGuardBytes;
+#else
+    const size_t feed_allocation_bytes = feed_bytes;
+#endif
     const uint32_t feed_buf_caps =
         this->feed_buf_in_psram_ ? (MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT) : (MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
-    int16_t *feed_buf = static_cast<int16_t *>(heap_caps_aligned_alloc(16, feed_bytes, feed_buf_caps));
+    int16_t *feed_buf = static_cast<int16_t *>(heap_caps_aligned_alloc(16, feed_allocation_bytes, feed_buf_caps));
     if (feed_buf == nullptr && this->feed_buf_in_psram_) {
       ESP_LOGW(TAG, "single-mic feed_buf (%u bytes) fell back to internal RAM", static_cast<unsigned>(feed_bytes));
-      feed_buf = static_cast<int16_t *>(heap_caps_aligned_alloc(16, feed_bytes, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+      feed_buf = static_cast<int16_t *>(
+          heap_caps_aligned_alloc(16, feed_allocation_bytes, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
     }
     if (feed_buf == nullptr) {
       ESP_LOGE(TAG, "Failed to allocate single-mic feed buffer (%u bytes)", static_cast<unsigned>(feed_bytes));
@@ -384,6 +390,9 @@ bool EspAfe::build_instance_(AfeInstance *instance) {
       afe_config_free(cfg);
       return false;
     }
+#ifdef ESP_AFE_RING_INTEGRITY_DEBUG
+    memset(reinterpret_cast<uint8_t *>(feed_buf) + feed_bytes, kDirectFeedGuardPattern, kDirectFeedGuardBytes);
+#endif
 
     instance->direct_iface = handle;
     instance->direct_data = direct_data;
@@ -1500,8 +1509,29 @@ bool EspAfe::process(const int16_t *in_mic, const int16_t *in_ref, int16_t *out,
     return false;
   }
 
+#ifdef ESP_AFE_RING_INTEGRITY_DEBUG
+  if (direct_path && !this->debug_validate_direct_runtime_("process.before_stage")) {
+    silence_frame(out, os);
+    this->clear_process_busy_();
+    finish_process_timing();
+    return false;
+  }
+#endif
+
   // Step 1: stage new input and feed it to AFE when a full frame is assembled.
   int offset = this->staged_input_samples_;
+#ifdef ESP_AFE_RING_INTEGRITY_DEBUG
+  if (direct_path && (offset < 0 || offset > fs || qs > fs - offset)) {
+    if (!this->debug_integrity_fault_.exchange(true, std::memory_order_acq_rel)) {
+      ESP_LOGE(TAG, "AFE integrity failure stage=process.shape offset=%d process=%d feed=%d fetch=%d channels=%d",
+               offset, qs, fs, os, this->total_channels_);
+    }
+    silence_frame(out, os);
+    this->clear_process_busy_();
+    finish_process_timing();
+    return false;
+  }
+#endif
   if (offset + qs > fs) {
     ESP_LOGW(TAG, "AFE staging overflow (%d + %d > %d), dropping staged input", offset, qs, fs);
     offset = 0;
@@ -1563,6 +1593,15 @@ bool EspAfe::process(const int16_t *in_mic, const int16_t *in_ref, int16_t *out,
     staged = false;
   }
 
+#ifdef ESP_AFE_RING_INTEGRITY_DEBUG
+  if (direct_path && !this->debug_validate_direct_runtime_("process.after_stage")) {
+    silence_frame(out, os);
+    this->clear_process_busy_();
+    finish_process_timing();
+    return false;
+  }
+#endif
+
   if (staged && offset == fs) {
     if (this->warmup_remaining_ > 0) {
       this->warmup_remaining_--;
@@ -1570,6 +1609,14 @@ bool EspAfe::process(const int16_t *in_mic, const int16_t *in_ref, int16_t *out,
 #ifdef USE_ESP_AFE_DIRECT_PATH
     if (this->direct_iface_ != nullptr && this->direct_data_ != nullptr) {
       int ret = this->direct_iface_->feed(this->direct_data_, this->feed_buf_);
+#ifdef ESP_AFE_RING_INTEGRITY_DEBUG
+      if (!this->debug_validate_direct_runtime_("process.after_esp_sr_feed")) {
+        silence_frame(out, os);
+        this->clear_process_busy_();
+        finish_process_timing();
+        return false;
+      }
+#endif
       if (ret > 0) {
         diag_add(this->feed_ok_);
         if (this->direct_feed_signal_ != nullptr && xSemaphoreGive(this->direct_feed_signal_) != pdTRUE) {
@@ -1615,6 +1662,14 @@ bool EspAfe::process(const int16_t *in_mic, const int16_t *in_ref, int16_t *out,
   // AFE output while this component is active.
   size_t output_bytes = static_cast<size_t>(os) * sizeof(int16_t);
   bool processed = false;
+#ifdef ESP_AFE_RING_INTEGRITY_DEBUG
+  if (direct_path && !this->debug_validate_direct_runtime_("process.before_fetch_read")) {
+    silence_frame(out, os);
+    this->clear_process_busy_();
+    finish_process_timing();
+    return false;
+  }
+#endif
   if (this->fetch_output_ring_) {
     size_t got = this->fetch_output_ring_->read(reinterpret_cast<uint8_t *>(out), output_bytes, 0);
     if (got == output_bytes) {
@@ -1862,10 +1917,21 @@ void EspAfe::handle_manager_result_(afe_fetch_result_t *result) {
     return;
   }
 
+#ifdef ESP_AFE_RING_INTEGRITY_DEBUG
+  if (!this->debug_validate_direct_runtime_("direct_fetch.before_ring_write")) {
+    return;
+  }
+#endif
+
   const size_t want = static_cast<size_t>(result->data_size);
   const uint8_t *src_bytes = reinterpret_cast<const uint8_t *>(result->data);
 
   size_t wrote = this->fetch_output_ring_->write_without_replacement(src_bytes, want, 0, false);
+#ifdef ESP_AFE_RING_INTEGRITY_DEBUG
+  if (!this->debug_validate_direct_runtime_("direct_fetch.after_ring_write")) {
+    return;
+  }
+#endif
   if (wrote != want) {
     diag_add(this->output_ring_drop_);
   } else {
@@ -2472,6 +2538,81 @@ bool EspAfe::prepare_fetch_output_ring_() {
   return true;
 }
 
+#ifdef ESP_AFE_RING_INTEGRITY_DEBUG
+void EspAfe::debug_arm_direct_runtime_() {
+  if (this->direct_iface_ == nullptr || this->direct_data_ == nullptr || this->feed_buf_ == nullptr ||
+      this->fetch_output_ring_ == nullptr) {
+    return;
+  }
+  this->debug_expected_feed_buf_ = this->feed_buf_;
+  this->debug_expected_feed_bytes_ = static_cast<size_t>(std::max(0, this->feed_chunksize_)) *
+                                     static_cast<size_t>(std::max(0, this->total_channels_)) * sizeof(int16_t);
+  this->debug_expected_fetch_ring_ = this->fetch_output_ring_.get();
+  this->debug_integrity_fault_.store(false, std::memory_order_release);
+  ESP_LOGW(TAG,
+           "AFE ring integrity diagnostics enabled feed=%p bytes=%u process=%d fetch=%d channels=%d ring=%p "
+           "handle=%p expected_handle=%p storage=%p ring_bytes=%u type=%d",
+           static_cast<void *>(this->feed_buf_), static_cast<unsigned>(this->debug_expected_feed_bytes_),
+           this->process_chunksize_, this->fetch_chunksize_, this->total_channels_,
+           static_cast<void *>(this->fetch_output_ring_.get()),
+           static_cast<void *>(this->fetch_output_ring_->debug_handle()),
+           static_cast<void *>(this->fetch_output_ring_->debug_expected_handle()),
+           const_cast<void *>(this->fetch_output_ring_->debug_storage()),
+           static_cast<unsigned>(this->fetch_output_ring_->debug_size()),
+           static_cast<int>(this->fetch_output_ring_->debug_type()));
+}
+
+void EspAfe::debug_disarm_direct_runtime_() {
+  this->debug_expected_fetch_ring_ = nullptr;
+  this->debug_expected_feed_buf_ = nullptr;
+  this->debug_expected_feed_bytes_ = 0;
+  this->debug_integrity_fault_.store(false, std::memory_order_release);
+}
+
+bool EspAfe::debug_validate_direct_runtime_(const char *stage) {
+  if (this->debug_integrity_fault_.load(std::memory_order_acquire)) {
+    return false;
+  }
+  if (this->direct_iface_ == nullptr || this->direct_data_ == nullptr) {
+    return true;
+  }
+
+  auto *ring = this->fetch_output_ring_.get();
+  const bool ring_pointer_ok = ring != nullptr && ring == this->debug_expected_fetch_ring_;
+  const bool ring_metadata_ok = ring_pointer_ok && ring->debug_metadata_valid(RINGBUF_TYPE_NOSPLIT);
+  const bool feed_pointer_ok = this->feed_buf_ != nullptr && this->feed_buf_ == this->debug_expected_feed_buf_;
+  bool feed_guard_ok = feed_pointer_ok && this->debug_expected_feed_bytes_ > 0;
+  if (feed_guard_ok) {
+    const uint8_t *guard = reinterpret_cast<const uint8_t *>(this->feed_buf_) + this->debug_expected_feed_bytes_;
+    for (size_t i = 0; i < kDirectFeedGuardBytes; i++) {
+      if (guard[i] != kDirectFeedGuardPattern) {
+        feed_guard_ok = false;
+        break;
+      }
+    }
+  }
+
+  if (ring_pointer_ok && ring_metadata_ok && feed_pointer_ok && feed_guard_ok) {
+    return true;
+  }
+
+  if (!this->debug_integrity_fault_.exchange(true, std::memory_order_acq_rel)) {
+    ESP_LOGE(TAG,
+             "AFE integrity failure stage=%s feed=%p expected_feed=%p feed_bytes=%u feed_guard=%s ring=%p "
+             "expected_ring=%p ring_metadata=%s handle=%p expected_handle=%p storage=%p ring_bytes=%u type=%d",
+             stage, static_cast<void *>(this->feed_buf_), static_cast<void *>(this->debug_expected_feed_buf_),
+             static_cast<unsigned>(this->debug_expected_feed_bytes_), feed_guard_ok ? "ok" : "CORRUPT",
+             static_cast<void *>(ring), static_cast<void *>(this->debug_expected_fetch_ring_),
+             ring_metadata_ok ? "ok" : "CORRUPT", ring_pointer_ok ? static_cast<void *>(ring->debug_handle()) : nullptr,
+             ring_pointer_ok ? static_cast<void *>(ring->debug_expected_handle()) : nullptr,
+             ring_pointer_ok ? const_cast<void *>(ring->debug_storage()) : nullptr,
+             ring_pointer_ok ? static_cast<unsigned>(ring->debug_size()) : 0U,
+             ring_pointer_ok ? static_cast<int>(ring->debug_type()) : -1);
+  }
+  return false;
+}
+#endif
+
 bool EspAfe::prepare_runtime_() {
   if (this->afe_stopped_.load(std::memory_order_acquire)) {
     return true;
@@ -2493,6 +2634,9 @@ bool EspAfe::prepare_runtime_() {
   if (!this->prepare_fetch_output_ring_()) {
     return false;
   }
+#ifdef ESP_AFE_RING_INTEGRITY_DEBUG
+  this->debug_arm_direct_runtime_();
+#endif
   this->log_memory_snapshot_("after_afe_prepare_runtime");
 #ifdef USE_ESP_AFE_DIRECT_PATH
   const bool direct_path = this->direct_data_ != nullptr;
@@ -2509,6 +2653,9 @@ void EspAfe::release_runtime_buffers_() {
     ESP_LOGE(TAG, "Retaining direct AFE runtime buffers while fetch task is live");
     return;
   }
+#endif
+#ifdef ESP_AFE_RING_INTEGRITY_DEBUG
+  this->debug_disarm_direct_runtime_();
 #endif
   this->fetch_output_ring_.reset();
 #ifdef USE_ESP_AFE_GMF_PATH

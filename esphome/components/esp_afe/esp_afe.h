@@ -246,6 +246,11 @@ class EspAfe final : public Component, public AudioProcessor {
   bool set_reinit_flag_(std::atomic<bool> &flag, bool enabled, const char *name);
   bool prepare_runtime_();
   bool prepare_fetch_output_ring_();
+#ifdef ESP_AFE_RING_INTEGRITY_DEBUG
+  bool debug_validate_direct_runtime_(const char *stage);
+  void debug_arm_direct_runtime_();
+  void debug_disarm_direct_runtime_();
+#endif
 #ifdef USE_ESP_AFE_GMF_PATH
   bool prepare_feed_input_ring_();
 #endif
@@ -359,6 +364,15 @@ class EspAfe final : public Component, public AudioProcessor {
 
   // Fetch bridge: GMF output port writes, process() reads non-blocking.
   esp_audio_stack::RingBufferPtr fetch_output_ring_;
+
+#ifdef ESP_AFE_RING_INTEGRITY_DEBUG
+  static constexpr size_t kDirectFeedGuardBytes = 32;
+  static constexpr uint8_t kDirectFeedGuardPattern = 0xA5;
+  esp_audio_stack::CapsRingBuffer *debug_expected_fetch_ring_{nullptr};
+  int16_t *debug_expected_feed_buf_{nullptr};
+  size_t debug_expected_feed_bytes_{0};
+  std::atomic<bool> debug_integrity_fault_{false};
+#endif
 
   // Config (set from Python, used in setup())
   int afe_type_{0};  // AFE_TYPE_SR
