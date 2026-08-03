@@ -55,6 +55,38 @@ def test_gmf_dual_mic_feed_uses_direct_ring_slots() -> None:
     assert "stage_afe_input_frame(static_cast<int16_t *>(gmf_slot)" in process
 
 
+def test_gmf_output_bridge_preserves_frame_boundaries_and_optional_reserve() -> None:
+    init = read("__init__.py")
+    cpp = read("esp_afe.cpp")
+    header = read("esp_afe.h")
+    ring = (
+        ROOT
+        / "esphome"
+        / "components"
+        / "esp_audio_stack"
+        / "audio_core_ring_buffer_caps.h"
+    ).read_text(encoding="utf-8")
+
+    assert 'CONF_OUTPUT_PREBUFFER_FRAMES = "output_prebuffer_frames"' in init
+    assert "cv.Optional(CONF_OUTPUT_PREBUFFER_FRAMES, default=0)" in init
+    assert "output_prebuffer_frames requires mic_num: 2" in init
+    assert "set_output_prebuffer_frames" in header
+
+    process = cpp[cpp.index("bool EspAfe::process(") : cpp.index("\nbool EspAfe::reinit_by_name")]
+    assert "this->fetch_output_ring_->nosplit_items_waiting() >= required_frames" in process
+    assert "static_cast<size_t>(this->output_prebuffer_frames_) + 1U" in process
+    assert "this->fetch_output_ring_->read(reinterpret_cast<uint8_t *>(out), output_bytes, 0)" in process
+
+    output_start = cpp.index("esp_gmf_err_io_t EspAfe::gmf_output_release_(")
+    output = cpp[output_start : cpp.index("\n#endif", output_start)]
+    assert "complete_frames = load->valid_size / frame_bytes" in output
+    assert "for (size_t frame = 0; frame < complete_frames; frame++)" in output
+    assert "write_without_replacement(frame_data, frame_bytes, 0, false)" in output
+    assert "write_without_replacement(load->buf, want" not in output
+    assert "size_t nosplit_items_waiting() const;" in ring
+    assert "vRingbufferGetInfo(this->handle_" in ring
+
+
 def test_esp_afe_uses_current_espressif_afe_dependencies() -> None:
     init = read("__init__.py")
     aec_init = read_aec("__init__.py")

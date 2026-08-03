@@ -635,6 +635,7 @@ bool EspAfe::install_instance_(AfeInstance *instance) {
   this->process_chunksize_ = instance->process_chunksize;
   this->total_channels_ = instance->total_channels;
   this->staged_input_samples_ = 0;
+  this->reset_output_prebuffer_();
 
 #ifdef USE_ESP_AFE_DIRECT_PATH
   instance->direct_iface = nullptr;
@@ -843,6 +844,7 @@ EspAfe::AfeInstance EspAfe::detach_instance_() {
   this->process_chunksize_ = 0;
   this->total_channels_ = 0;
   this->staged_input_samples_ = 0;
+  this->reset_output_prebuffer_();
 
   return instance;
 }
@@ -1341,6 +1343,8 @@ void EspAfe::dump_config() {
                 "  Process: %d samples, Feed: %d samples, Fetch: %d samples, "
                 "Channels: %d",
                 this->process_chunksize_, this->feed_chunksize_, this->fetch_chunksize_, this->total_channels_);
+  ESP_LOGCONFIG(TAG, "  Processed output prebuffer: %u frame(s)",
+                static_cast<unsigned>(this->output_prebuffer_frames_));
   ESP_LOGCONFIG(TAG, "  Initialized: %s", this->is_initialized() ? "YES" : "NO");
 }
 
@@ -1671,6 +1675,12 @@ bool EspAfe::process(const int16_t *in_mic, const int16_t *in_ref, int16_t *out,
   }
 #endif
   if (this->fetch_output_ring_) {
+    if (!this->output_prebuffer_ready_) {
+      const size_t required_frames = static_cast<size_t>(this->output_prebuffer_frames_) + 1U;
+      this->output_prebuffer_ready_ = this->fetch_output_ring_->nosplit_items_waiting() >= required_frames;
+    }
+  }
+  if (this->fetch_output_ring_ && this->output_prebuffer_ready_) {
     size_t got = this->fetch_output_ring_->read(reinterpret_cast<uint8_t *>(out), output_bytes, 0);
     if (got == output_bytes) {
       processed = true;
@@ -1886,14 +1896,32 @@ esp_gmf_err_io_t EspAfe::gmf_output_release_(esp_gmf_payload_t *load, int wait_t
     return ESP_GMF_IO_FAIL;
   }
 
-  const size_t want = load->valid_size;
-  size_t wrote = this->fetch_output_ring_->write_without_replacement(load->buf, want, 0, false);
-  if (wrote != want) {
-    diag_add(this->output_ring_drop_);
-  } else {
+  const size_t frame_bytes = static_cast<size_t>(this->fetch_chunksize_) * sizeof(int16_t);
+  if (frame_bytes == 0) {
+    return ESP_GMF_IO_FAIL;
+  }
+
+  // The GMF element drains every processed sample currently available from
+  // its internal data bus. After scheduler jitter one payload can therefore
+  // contain several complete AFE frames. Keep the NOSPLIT bridge frame-atomic:
+  // its read operation returns a whole item and would otherwise discard every
+  // byte after the first frame copied into the consumer buffer.
+  const auto *src = static_cast<const uint8_t *>(load->buf);
+  const size_t complete_frames = load->valid_size / frame_bytes;
+  for (size_t frame = 0; frame < complete_frames; frame++) {
+    const uint8_t *frame_data = src + frame * frame_bytes;
+    const size_t wrote = this->fetch_output_ring_->write_without_replacement(frame_data, frame_bytes, 0, false);
+    if (wrote != frame_bytes) {
+      diag_add(this->output_ring_drop_);
+      continue;
+    }
     diag_add(this->fetch_ok_);
     uint32_t queued = diag_increment_and_get(this->fetch_queue_frames_);
     update_peak_atomic(this->fetch_queue_peak_, queued);
+  }
+  if (load->valid_size % frame_bytes != 0) {
+    ESP_LOGW(TAG, "GMF AFE output size is not frame-aligned (%u bytes, frame=%u)",
+             static_cast<unsigned>(load->valid_size), static_cast<unsigned>(frame_bytes));
   }
   this->update_fetch_ring_free_pct_();
   TaskHandle_t waiter = this->pipeline_flush_waiter_.load(std::memory_order_acquire);
@@ -2173,6 +2201,7 @@ bool EspAfe::start_pipeline_() {
     if (this->fetch_output_ring_) {
       this->fetch_output_ring_->reset();
     }
+    this->reset_output_prebuffer_();
     this->feed_queue_frames_.store(0, std::memory_order_relaxed);
     this->fetch_queue_frames_.store(0, std::memory_order_relaxed);
     if (!this->start_direct_fetch_task_()) {
@@ -2196,6 +2225,7 @@ bool EspAfe::start_pipeline_() {
   if (this->fetch_output_ring_) {
     this->fetch_output_ring_->reset();
   }
+  this->reset_output_prebuffer_();
   this->feed_queue_frames_.store(0, std::memory_order_relaxed);
   this->fetch_queue_frames_.store(0, std::memory_order_relaxed);
   if (this->afe_pipeline_paused_) {
@@ -2297,6 +2327,7 @@ void EspAfe::stop_pipeline_() {
     if (this->fetch_output_ring_) {
       this->fetch_output_ring_->reset();
     }
+    this->reset_output_prebuffer_();
     this->fetch_queue_frames_.store(0, std::memory_order_relaxed);
     return;
   }
@@ -2325,6 +2356,7 @@ void EspAfe::stop_pipeline_() {
   if (this->fetch_output_ring_) {
     this->fetch_output_ring_->reset();
   }
+  this->reset_output_prebuffer_();
   this->feed_queue_frames_.store(0, std::memory_order_relaxed);
   this->fetch_queue_frames_.store(0, std::memory_order_relaxed);
 }
@@ -2467,6 +2499,7 @@ void EspAfe::set_processing_active(bool active) {
         if (this->fetch_output_ring_) {
           this->fetch_output_ring_->reset();
         }
+        this->reset_output_prebuffer_();
         this->fetch_queue_frames_.store(0, std::memory_order_relaxed);
         ESP_LOGI(TAG, "AFE idle: processing pipeline suspended (no mic consumers)");
       } else {
@@ -2533,6 +2566,7 @@ bool EspAfe::prepare_fetch_output_ring_() {
       ESP_LOGE(TAG, "Failed to allocate AFE fetch output ring buffer");
       return false;
     }
+    this->reset_output_prebuffer_();
   }
 
   return true;
@@ -2658,6 +2692,7 @@ void EspAfe::release_runtime_buffers_() {
   this->debug_disarm_direct_runtime_();
 #endif
   this->fetch_output_ring_.reset();
+  this->reset_output_prebuffer_();
 #ifdef USE_ESP_AFE_GMF_PATH
   this->feed_input_ring_ = nullptr;
   if (this->feed_input_ring_storage_ != nullptr) {

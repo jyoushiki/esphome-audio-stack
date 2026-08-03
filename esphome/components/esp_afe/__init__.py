@@ -35,6 +35,8 @@ def _validate_feature_config(config):
         raise cv.Invalid(
             f"input_format: {config[CONF_INPUT_FORMAT]} requires mic_num: 2"
         )
+    if config[CONF_OUTPUT_PREBUFFER_FRAMES] > 0 and config[CONF_MIC_NUM] < 2:
+        raise cv.Invalid("output_prebuffer_frames requires mic_num: 2")
     return config
 
 
@@ -77,6 +79,7 @@ CONF_FEED_BUF_IN_PSRAM = "feed_buf_in_psram"
 CONF_FEED_RING_IN_PSRAM = "feed_ring_in_psram"
 CONF_FETCH_RING_IN_PSRAM = "fetch_ring_in_psram"
 CONF_INPUT_FORMAT = "input_format"
+CONF_OUTPUT_PREBUFFER_FRAMES = "output_prebuffer_frames"
 
 AFE_TYPES = {
     "sr": 0,  # AFE_TYPE_SR: speech recognition, linear AEC (preserves spectrum for MWW)
@@ -197,6 +200,12 @@ CONFIG_SCHEMA = cv.All(
             cv.Optional(CONF_FEED_BUF_IN_PSRAM, default=False): cv.boolean,
             cv.Optional(CONF_FEED_RING_IN_PSRAM, default=False): cv.boolean,
             cv.Optional(CONF_FETCH_RING_IN_PSRAM, default=False): cv.boolean,
+            # The dual-mic GMF path is asynchronous. An opt-in processed-frame
+            # reserve absorbs bounded scheduler jitter without blocking the
+            # realtime audio consumer. Zero preserves the existing behavior.
+            cv.Optional(CONF_OUTPUT_PREBUFFER_FRAMES, default=0): cv.int_range(
+                min=0, max=2
+            ),
         }
     ).extend(cv.COMPONENT_SCHEMA),
     _validate_esp32_variant,
@@ -243,6 +252,7 @@ async def to_code(config):
     cg.add(var.set_feed_buf_in_psram(config[CONF_FEED_BUF_IN_PSRAM]))
     cg.add(var.set_feed_ring_in_psram(config[CONF_FEED_RING_IN_PSRAM]))
     cg.add(var.set_fetch_ring_in_psram(config[CONF_FETCH_RING_IN_PSRAM]))
+    cg.add(var.set_output_prebuffer_frames(config[CONF_OUTPUT_PREBUFFER_FRAMES]))
 
     cg.add_define("USE_AUDIO_PROCESSOR")
 

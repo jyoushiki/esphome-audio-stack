@@ -55,6 +55,7 @@ class CapsRingBuffer final : public ring_buffer::RingBuffer {
   size_t write_without_replacement(const void *data, size_t len, TickType_t ticks_to_wait = 0,
                                    bool write_partial = true);
   BaseType_t reset();
+  size_t nosplit_items_waiting() const;
 
 #ifdef ESP_AFE_RING_INTEGRITY_DEBUG
   bool debug_metadata_valid(RingbufferType_t expected_type) const {
@@ -197,6 +198,14 @@ inline BaseType_t CapsRingBuffer::reset() {
       return pdPASS;
     vRingbufferReturnItem(this->handle_, item);
   }
+}
+
+inline size_t CapsRingBuffer::nosplit_items_waiting() const {
+  if (!this->is_nosplit_())
+    return 0;
+  UBaseType_t items_waiting = 0;
+  vRingbufferGetInfo(this->handle_, nullptr, nullptr, nullptr, nullptr, &items_waiting);
+  return static_cast<size_t>(items_waiting);
 }
 
 inline bool CapsRingBuffer::discard_bytes_(size_t discard_bytes) {

@@ -73,6 +73,10 @@ Configuration variables:
   task settings.
 - **feed_buf_in_psram**, **feed_ring_in_psram**, **fetch_ring_in_psram**
   (*Optional*, boolean): Wrapper scratch/bridge placement controls.
+- **output_prebuffer_frames** (*Optional*, int): Keep ``0`` to preserve the
+  zero-reserve bridge. Values ``1`` or ``2`` add fixed processed-audio latency
+  on the asynchronous dual-mic GMF path so bounded scheduler jitter does not
+  become a silent output frame.
 
 Dual-mic Speech Enhancement requires a TDM topology with two microphone slots
 and a valid echo reference supplied by ``esp_audio_stack``.

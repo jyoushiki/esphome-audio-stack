@@ -161,6 +161,10 @@ class EspAfe final : public Component, public AudioProcessor {
   void set_feed_buf_in_psram(bool psram) { this->feed_buf_in_psram_ = psram; }
   void set_feed_ring_in_psram(bool psram) { this->feed_ring_in_psram_ = psram; }
   void set_fetch_ring_in_psram(bool psram) { this->fetch_ring_in_psram_ = psram; }
+  void set_output_prebuffer_frames(int frames) {
+    this->output_prebuffer_frames_ = static_cast<uint8_t>(frames);
+    this->reset_output_prebuffer_();
+  }
   void set_input_volume_sensor_enabled(bool en) { this->input_volume_sensor_enabled_ = en; }
   void set_output_rms_sensor_enabled(bool en) { this->output_rms_sensor_enabled_ = en; }
 
@@ -238,6 +242,7 @@ class EspAfe final : public Component, public AudioProcessor {
   bool build_instance_(AfeInstance *instance);
   bool recreate_instance_(bool require_same_frame_sizes);
   void clear_process_busy_();
+  void reset_output_prebuffer_() { this->output_prebuffer_ready_ = this->output_prebuffer_frames_ == 0; }
   bool start_reconfigure_task_();
   static void reconfigure_task_trampoline(void *arg);
   void reconfigure_task_loop_();
@@ -298,6 +303,8 @@ class EspAfe final : public Component, public AudioProcessor {
   int process_chunksize_{0};  // external process() input chunk size
   int total_channels_{2};
   int staged_input_samples_{0};
+  uint8_t output_prebuffer_frames_{0};
+  bool output_prebuffer_ready_{true};
   // Last mic_channels_in seen by process(); used to drop a partial
   // staged frame if the consumer flips the channel layout without
   // passing through recreate_instance_ first.
