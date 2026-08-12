@@ -1084,6 +1084,9 @@ bool ESPAudioStack::enable_i2s_channels_() {
     this->deinit_i2s_();
     return false;
   }
+  if (this->tx_handle_ != nullptr) {
+    this->tx_completion_tracking_active_.store(true, std::memory_order_release);
+  }
   auto tx_cfg = this->make_tx_sample_config_();
   auto rx_cfg = this->make_rx_sample_config_();
   if (!this->codec_backend_.open(this->tx_handle_ ? &tx_cfg : nullptr, this->rx_handle_ ? &rx_cfg : nullptr)) {
@@ -1099,6 +1102,7 @@ bool ESPAudioStack::enable_i2s_channels_() {
       this->deinit_i2s_();
       return false;
     }
+    this->tx_completion_tracking_active_.store(true, std::memory_order_release);
     esp_err_t err = i2s_channel_enable(this->tx_handle_);
     if (err != ESP_OK) {
       ESP_LOGE(TAG, "Failed to enable TX I2S channel: %s", esp_err_to_name(err));
@@ -1173,7 +1177,8 @@ void ESPAudioStack::deinit_i2s_() {
 
 bool IRAM_ATTR ESPAudioStack::tx_on_sent_callback(i2s_chan_handle_t handle, i2s_event_data_t *event, void *user_ctx) {
   auto *self = static_cast<ESPAudioStack *>(user_ctx);
-  if (self == nullptr || self->tx_completion_event_queue_ == nullptr) {
+  if (self == nullptr || !self->tx_completion_tracking_active_.load(std::memory_order_acquire) ||
+      self->tx_completion_event_queue_ == nullptr) {
     return false;
   }
   const int64_t now = esp_timer_get_time();
@@ -1279,6 +1284,7 @@ bool ESPAudioStack::prime_tx_completion_records_(bool preload_dma) {
 }
 
 void ESPAudioStack::reset_tx_completion_tracking_() {
+  this->tx_completion_tracking_active_.store(false, std::memory_order_release);
   this->tx_completion_desync_ = false;
   this->tx_completion_pending_real_records_.store(0, std::memory_order_release);
   this->tx_completion_idle_event_drops_.store(0, std::memory_order_release);
@@ -1300,13 +1306,12 @@ void ESPAudioStack::dispatch_speaker_output_callbacks_(uint32_t frames, int64_t 
 }
 
 void ESPAudioStack::drain_tx_completion_events_() {
-  if (this->tx_completion_event_queue_ == nullptr || this->tx_completion_record_queue_ == nullptr) {
+  if (!this->tx_completion_tracking_active_.load(std::memory_order_acquire) ||
+      this->tx_completion_event_queue_ == nullptr || this->tx_completion_record_queue_ == nullptr) {
     return;
   }
   if (this->tx_completion_desync_) {
-    ESP_LOGE(TAG, "TX completion event queue overflowed; stopping audio stack to restore lockstep");
-    this->has_i2s_error_.store(true, std::memory_order_relaxed);
-    this->audio_stack_running_.store(false, std::memory_order_relaxed);
+    this->fail_tx_completion_tracking_("TX completion event queue overflowed");
     return;
   }
   const uint32_t idle_drops = this->tx_completion_idle_event_drops_.exchange(0, std::memory_order_acq_rel);
@@ -1324,9 +1329,7 @@ void ESPAudioStack::drain_tx_completion_events_() {
         // are driver priming noise and must not stop the full-duplex mic path.
         continue;
       }
-      ESP_LOGE(TAG, "TX completion event without matching write record; stopping audio stack");
-      this->has_i2s_error_.store(true, std::memory_order_relaxed);
-      this->audio_stack_running_.store(false, std::memory_order_relaxed);
+      this->fail_tx_completion_tracking_("TX completion event without matching write record");
       return;
     }
     if (record.real_frames == 0) {
@@ -1345,13 +1348,12 @@ void ESPAudioStack::drain_tx_completion_events_() {
 }
 
 bool ESPAudioStack::queue_tx_completion_record_(const TxCompletionRecord &record) {
-  if (this->tx_completion_record_queue_ == nullptr) {
+  if (!this->tx_completion_tracking_active_.load(std::memory_order_acquire) ||
+      this->tx_completion_record_queue_ == nullptr) {
     return true;
   }
   if (xQueueSend(this->tx_completion_record_queue_, &record, 0) != pdTRUE) {
-    ESP_LOGE(TAG, "TX completion record queue full; stopping audio stack");
-    this->has_i2s_error_.store(true, std::memory_order_relaxed);
-    this->audio_stack_running_.store(false, std::memory_order_relaxed);
+    this->fail_tx_completion_tracking_("TX completion record queue full");
     return false;
   }
   if (record.real_frames > 0) {
@@ -1361,10 +1363,16 @@ bool ESPAudioStack::queue_tx_completion_record_(const TxCompletionRecord &record
 }
 
 void ESPAudioStack::mark_tx_completion_desync_(const char *reason) {
-  ESP_LOGE(TAG, "%s; stopping audio stack to preserve TX completion ordering", reason);
   this->tx_completion_desync_ = true;
+  this->fail_tx_completion_tracking_(reason);
+}
+
+void ESPAudioStack::fail_tx_completion_tracking_(const char *reason) {
+  ESP_LOGE(TAG, "%s; stopping audio stack to restore TX completion lockstep", reason);
+  this->tx_completion_tracking_active_.store(false, std::memory_order_release);
   this->has_i2s_error_.store(true, std::memory_order_relaxed);
   this->audio_stack_running_.store(false, std::memory_order_relaxed);
+  this->teardown_pending_.store(true, std::memory_order_release);
 }
 
 bool ESPAudioStack::wait_audio_task_state_(bool idle, uint32_t timeout_ms) {
@@ -1460,6 +1468,12 @@ void ESPAudioStack::stop() {
   }
 
   ESP_LOGI(TAG, "Stopping audio stack (deferred)");
+
+  // Closing a session invalidates every outstanding completion record. Stop
+  // the ISR producer before changing consumer state so late on_sent callbacks
+  // from descriptors already owned by IDF cannot turn an orderly teardown
+  // into a persistent I2S error.
+  this->tx_completion_tracking_active_.store(false, std::memory_order_release);
 
   // Consumers stay registered across stop()/start() so the mic path is
   // reconnected automatically after an internal restart (frame_spec change).

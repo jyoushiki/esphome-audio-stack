@@ -33,6 +33,7 @@ class ESPAudioStackMicrophone final : public microphone::Microphone, public Comp
 
   // Reference counting for multiple listeners (voice_assistant, wake_word, call components, etc.)
   SemaphoreHandle_t active_listeners_semaphore_{nullptr};
+  bool i2s_error_latched_{false};
 };
 
 }  // namespace esphome::esp_audio_stack

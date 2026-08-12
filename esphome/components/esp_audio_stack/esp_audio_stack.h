@@ -615,6 +615,7 @@ class ESPAudioStack final : public Component {
   void reset_tx_completion_tracking_();
   bool queue_tx_completion_record_(const TxCompletionRecord &record);
   void mark_tx_completion_desync_(const char *reason);
+  void fail_tx_completion_tracking_(const char *reason);
   void dispatch_speaker_output_callbacks_(uint32_t frames, int64_t timestamp);
 
 #ifdef USE_ESP_AUDIO_STACK_MONO_REF
@@ -763,6 +764,7 @@ class ESPAudioStack final : public Component {
   size_t tx_completion_queue_size_{0};
   size_t tx_completion_dma_buffer_bytes_{0};
   uint32_t tx_completion_dma_frames_{0};
+  std::atomic<bool> tx_completion_tracking_active_{false};
   volatile bool tx_completion_desync_{false};
   std::atomic<uint32_t> tx_completion_pending_real_records_{0};
   std::atomic<uint32_t> tx_completion_idle_event_drops_{0};

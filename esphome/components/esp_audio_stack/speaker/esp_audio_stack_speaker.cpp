@@ -186,9 +186,16 @@ void ESPAudioStackSpeaker::set_pause_state(bool pause_state) {
 
 void ESPAudioStackSpeaker::loop() {
   // Propagate I2S errors from parent audio task
-  if (this->parent_->has_i2s_error() && !this->status_has_error()) {
-    ESP_LOGE(TAG, "I2S error detected in audio task");
-    this->status_set_error(LOG_STR("I2S write error in audio task"));
+  if (this->parent_->has_i2s_error()) {
+    if (!this->i2s_error_latched_) {
+      ESP_LOGE(TAG, "I2S error detected in audio task");
+      this->status_set_error(LOG_STR("I2S write error in audio task"));
+      this->i2s_error_latched_ = true;
+    }
+  } else if (this->i2s_error_latched_) {
+    this->status_clear_error();
+    this->i2s_error_latched_ = false;
+    ESP_LOGI(TAG, "I2S audio path recovered");
   }
 
   UBaseType_t count = uxSemaphoreGetCount(this->active_listeners_semaphore_);
@@ -203,7 +210,7 @@ void ESPAudioStackSpeaker::loop() {
 
   switch (this->state_) {
     case speaker::STATE_STARTING:
-      if (this->status_has_error()) {
+      if (this->status_has_error() && !this->i2s_error_latched_) {
         break;
       }
       if (uxSemaphoreGetCount(this->active_listeners_semaphore_) == MAX_LISTENERS) {

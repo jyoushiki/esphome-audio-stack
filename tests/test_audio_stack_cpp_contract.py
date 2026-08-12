@@ -72,6 +72,51 @@ def test_idle_tx_completion_overflow_preserves_full_duplex_capture() -> None:
     assert "Discarded %u idle TX completion events" in cpp
 
 
+def test_tx_completion_tracking_is_session_scoped() -> None:
+    """Late IDF callbacks from a stopped session cannot poison the next call."""
+    cpp = read("esp_audio_stack.cpp")
+    header = read("esp_audio_stack.h")
+    callback = cpp[
+        cpp.index("bool IRAM_ATTR ESPAudioStack::tx_on_sent_callback") :
+        cpp.index("bool ESPAudioStack::prepare_tx_completion_tracking_")
+    ]
+    stop = cpp[cpp.index("void ESPAudioStack::stop()") : cpp.index("bool ESPAudioStack::register_mic_consumer")]
+    enable = cpp[cpp.index("bool ESPAudioStack::enable_i2s_channels_()") : cpp.index("void ESPAudioStack::close_audio_io_")]
+
+    assert "std::atomic<bool> tx_completion_tracking_active_{false}" in header
+    assert "tx_completion_tracking_active_.load(std::memory_order_acquire)" in callback
+    assert stop.index("tx_completion_tracking_active_.store(false") < stop.index(
+        "audio_stack_running_.store(false"
+    )
+    assert "tx_completion_tracking_active_.store(true" in enable
+    assert "tx_completion_tracking_active_.store(false" in cpp[
+        cpp.index("void ESPAudioStack::reset_tx_completion_tracking_") :
+        cpp.index("void ESPAudioStack::dispatch_speaker_output_callbacks_")
+    ]
+    failure = cpp[
+        cpp.index("void ESPAudioStack::fail_tx_completion_tracking_") :
+        cpp.index("bool ESPAudioStack::wait_audio_task_state_")
+    ]
+    assert "tx_completion_tracking_active_.store(false" in failure
+    assert "has_i2s_error_.store(true" in failure
+    assert "audio_stack_running_.store(false" in failure
+    assert "teardown_pending_.store(true" in failure
+
+
+def test_children_can_restart_after_parent_i2s_recovery() -> None:
+    """A parent I2S fault is latched for visibility but cannot deadlock restart."""
+    mic = read("microphone/esp_audio_stack_microphone.cpp")
+    speaker = read("speaker/esp_audio_stack_speaker.cpp")
+    mic_header = read("microphone/esp_audio_stack_microphone.h")
+    speaker_header = read("speaker/esp_audio_stack_speaker.h")
+
+    for source, header in ((mic, mic_header), (speaker, speaker_header)):
+        assert "bool i2s_error_latched_{false}" in header
+        assert "else if (this->i2s_error_latched_)" in source
+        assert "this->status_clear_error();" in source
+        assert "this->status_has_error() && !this->i2s_error_latched_" in source
+
+
 def test_speaker_output_callbacks_follow_i2s_completion_not_buffer_acceptance() -> None:
     """Sendspin/mixer timing must advance only after DMA reports playback."""
     stack_cpp = read("esp_audio_stack.cpp")

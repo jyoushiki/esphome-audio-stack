@@ -122,9 +122,16 @@ void ESPAudioStackMicrophone::on_audio_data_(const uint8_t *data, size_t len) {
 
 void ESPAudioStackMicrophone::loop() {
   // Propagate I2S errors from parent audio task
-  if (this->parent_->has_i2s_error() && !this->status_has_error()) {
-    ESP_LOGE(TAG, "I2S error detected in audio task");
-    this->status_set_error(LOG_STR("I2S read error in audio task"));
+  if (this->parent_->has_i2s_error()) {
+    if (!this->i2s_error_latched_) {
+      ESP_LOGE(TAG, "I2S error detected in audio task");
+      this->status_set_error(LOG_STR("I2S read error in audio task"));
+      this->i2s_error_latched_ = true;
+    }
+  } else if (this->i2s_error_latched_) {
+    this->status_clear_error();
+    this->i2s_error_latched_ = false;
+    ESP_LOGI(TAG, "I2S audio path recovered");
   }
 
   // Check semaphore count to decide when to start/stop
@@ -142,7 +149,7 @@ void ESPAudioStackMicrophone::loop() {
 
   switch (this->state_) {
     case microphone::STATE_STARTING:
-      if (this->status_has_error()) {
+      if (this->status_has_error() && !this->i2s_error_latched_) {
         break;
       }
       if (uxSemaphoreGetCount(this->active_listeners_semaphore_) >= MAX_LISTENERS) {
