@@ -26,13 +26,15 @@ Supports single-mic (MR) and dual-mic (MMR/MMNR) configurations.
 **Dual-mic (MMR/MMNR) mode** (`se_enabled: true` with `mic_num: 2`):
 
 ```text
-[mic1 + mic2 + ref] -> |AEC| -> |Speech Enhancement| -> [clean output]
+[mic1 + mic2 + ref] -> |AEC| -> |Speech Enhancement/BSS| -> |post-AFE AGC| -> [clean output]
 ```
 
 > **Note**: When Speech Enhancement is active, esp-sr prioritizes BSS over NS.
-> `afe_config_check()` may clear `ns_init` on dual-mic builds. AGC can be
-> configured at boot, but the stock GMF manager does not expose it as a live
-> feature, so AGC changes require AFE reinit.
+> `afe_config_check()` may clear `ns_init` on dual-mic builds. ESP-SR 2.5.x
+> also accepts `agc_init` but omits AGC from its effective two-microphone graph.
+> When `agc_enabled` is true, this component therefore applies Espressif's
+> public WebRTC AGC to the processed mono output. The 160-sample AGC cadence
+> adds a fixed 10 ms causal delay. AGC changes still require AFE reinit.
 
 Unlike `esp_aec` (standalone echo cancellation only), `esp_afe` provides a full
 signal processing pipeline. Both components implement the `AudioProcessor`
@@ -47,7 +49,7 @@ interface, but the AFE feed/fetch task model needs the steady producer that
 | Speech Enhancement | No | Yes (dual-mic) |
 | Noise Suppression | No | Yes (WebRTC, single-mic mode) |
 | Voice Activity Detection | No | Yes (WebRTC) |
-| Automatic Gain Control | No | Yes (WebRTC, when kept by `afe_config_check`) |
+| Automatic Gain Control | No | Yes (ESP-SR WebRTC for one mic; post-AFE WebRTC for two mics) |
 | Runtime switches in HA | Parent-stack processor bypass | AEC and VAD live through the active AFE API; NS/AGC by AFE reinit; SE/BSS is structural |
 | Diagnostic sensors | No | Input volume, output RMS, voice presence |
 | Runtime shape | Synchronous on the parent audio task | Direct feed/fetch for one mic; GMF manager/pipeline for two mics |
@@ -137,7 +139,7 @@ esp_afe:
 | `aec_filter_length` | int | `4` | ESP-SR filter-length parameter (1-8). Effective time coverage depends on the selected engine/frame shape; tune it from measured echo-tail behavior. |
 | `aec_nlp_level` | string | `aggressive` | ESP-SR nonlinear echo suppression level: `normal`, `aggressive`, or `very_aggressive`. Lower levels preserve near-end wake speech better while playback is active; higher levels suppress speaker leakage harder |
 | `ns_enabled` | bool | **true** | Enable noise suppression (WebRTC engine) |
-| `agc_enabled` | bool | **true** | Enable automatic gain control (WebRTC engine) |
+| `agc_enabled` | bool | **true** | Enable automatic gain control. Uses ESP-SR's WebRTC stage for one mic and an explicit post-AFE WebRTC stage for two mics |
 | `se_enabled` | bool | **false** | Enable Speech Enhancement / spatial source separation. Required for `mic_num: 2`; dual-mic AFE treats SE/BSS as structural and does not expose a runtime SE switch |
 | `vad_enabled` | bool | **false** | Enable voice activity detection |
 | `vad_mode` | int | `3` | VAD aggressiveness (0-4). Higher = rejects more noise but may miss quiet speech |
@@ -147,8 +149,8 @@ esp_afe:
 | `vad_mute_playback` | bool | `false` | When VAD detects speech, mute the speaker output to prevent acoustic feedback during voice commands. Useful for voice-assistant pipelines that play TTS while still listening. |
 | `vad_enable_channel_trigger` | bool | `false` | Per-channel VAD triggering (multi-mic setups). esp-sr exposes which mic channel detected the speech, useful for Speech Enhancement-aware downstream consumers. |
 | `continuous_vad` | bool | `false` | Allow VAD to keep the microphone/AFE path active without an external consumer. Use `true` when the `Voice Detected` binary sensor must work in standby; keep `false` when another consumer should own the mic lifecycle. |
-| `agc_compression_gain` | int | `9` | AGC compression gain in dB (0-30) |
-| `agc_target_level` | int | `3` | AGC target level (0-31, lower value = louder output) |
+| `agc_compression_gain` | int | `9` | AGC compression gain in dB (0-30), also used by the dual-mic post-AFE stage |
+| `agc_target_level` | int | `3` | AGC target level (0-31, lower value = louder output), also used by the dual-mic post-AFE stage |
 | `memory_alloc_mode` | string | `more_psram` | Memory allocation: `more_internal`, `internal_psram_balance`, `more_psram` |
 | `afe_linear_gain` | float | `1.0` | Linear gain multiplier applied to output (0.1-10.0) |
 | `task_core` | int | `1` | Core preference for the esp-sr SE/BSS worker task created by the AFE instance. |
@@ -395,15 +397,16 @@ exposes only part of the lower ESP-SR runtime control surface:
 | AEC | Live AFE control | None | Immediate on/off through the direct API or `ESP_AFE_FEATURE_AEC` on GMF |
 | SE | Boot-time graph choice | N/A | Structural on dual-mic builds; single-mic users should use a single-mic config or `esp_aec` |
 | NS | AFE reinit | hundreds of ms plus possible audio-task restart | ESP-SR exposes low-level vtable entries, but `esp_gmf_afe_manager` does not expose an NS feature enum. Not exposed on dual-mic SE/BSS builds because `afe_config_check()` prioritizes BSS over NS |
-| AGC | AFE reinit | hundreds of ms plus possible audio-task restart | Same manager limitation as NS. Avoid toggling while real-time audio is active. |
-| VAD | Live AFE control | None | `vad_init` stays structural; runtime on/off uses the selected direct/GMF control without rebuilding the AFE instance |
+| AGC | AFE reinit | hundreds of ms plus possible audio-task restart | Rebuilds ESP-SR's AGC for one mic or the explicit post-AFE WebRTC AGC for two mics. Avoid toggling while real-time audio is active. |
+| VAD | Live AFE control | None | `vad_init` stays structural. On GMF, VAD remains enabled while the element creates its wake-state lock, then the configured OFF state is applied from the first output callback after open. |
 
 **Why reinit for NS/AGC?** ESP-SR's low-level AFE vtable includes
 `enable_ns()`, `disable_ns()`, `enable_agc()`, and `disable_agc()`, but the
 stock GMF manager keeps the AFE iface/data private and only publishes runtime
 feature toggles for AEC, VAD, and SE that are relevant to this component.
 For consistent behavior across the direct and GMF implementations, this wrapper
-represents NS/AGC changes as config changes and rebuilds the AFE instance.
+represents NS/AGC changes as config changes and rebuilds the AFE instance. On
+dual-mic builds the rebuild also creates or destroys the post-AFE WebRTC AGC.
 
 The reinit is safe: the previous AFE is destroyed first (ESP-SR's FFT resources are a global singleton, only one instance can exist), then the new one is built. While an AFE instance is active, missing processed output is emitted as silence rather than raw pre-AFE microphone audio.
 
@@ -582,7 +585,7 @@ risk on the same network path that carries TTS/media, API and VoIP traffic.
 
 ## Known Limitations
 
-1. **Speech Enhancement replaces NS on dual-mic input**: With two microphone channels, `afe_config_check()` prioritizes SE/BSS over NS. SE/BSS is structural and is not a runtime toggle. Public dual-mic profiles keep AGC disabled and do not expose AGC controls because AGC changes require full AFE reinit.
+1. **Speech Enhancement replaces NS on dual-mic input**: With two microphone channels, `afe_config_check()` prioritizes SE/BSS over NS. SE/BSS is structural and is not a runtime toggle. Dual-mic AGC runs as an explicit post-AFE WebRTC stage because ESP-SR 2.5.x omits AGC from its effective two-microphone graph.
 
 2. **Runtime toggles**: AEC and VAD use the active direct/GMF control without rebuilding. NS/AGC and type/mode changes require a full AFE reinit.
 
@@ -619,9 +622,10 @@ responses are:
 ### Switch toggle has no effect
 
 AEC and VAD are live through the selected direct/GMF control. NS and AGC
-toggles require AFE reinit. Public dual-mic packages do not expose NS or AGC
-toggles. If reinit is in progress, active AFE output is silenced instead of
-exposing raw pre-AFE microphone audio.
+toggles require AFE reinit. Dual-mic packages do not expose NS toggles because
+BSS takes priority; AGC reinit recreates the post-AFE stage. If reinit is in
+progress, active AFE output is silenced instead of exposing raw pre-AFE
+microphone audio.
 
 ### Voice presence always OFF
 

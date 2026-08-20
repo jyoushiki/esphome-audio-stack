@@ -43,6 +43,7 @@ static constexpr int AFE_TYPE_SR = 0;
 static constexpr int AFE_TYPE_VC = 1;
 static constexpr int VAD_MODE_3 = 3;
 #else
+#include <esp_agc.h>
 #include <esp_afe_config.h>
 #include <esp_afe_sr_iface.h>
 #include <esp_afe_sr_models.h>
@@ -243,6 +244,10 @@ class EspAfe final : public Component, public AudioProcessor {
   bool recreate_instance_(bool require_same_frame_sizes);
   void clear_process_busy_();
   void reset_output_prebuffer_() { this->output_prebuffer_ready_ = this->output_prebuffer_frames_ == 0; }
+  bool prepare_post_afe_agc_();
+  void release_post_afe_agc_();
+  void reset_post_afe_agc_();
+  bool process_post_afe_agc_frame_(const int16_t *input, int16_t *output, size_t samples);
   bool start_reconfigure_task_();
   static void reconfigure_task_trampoline(void *arg);
   void reconfigure_task_loop_();
@@ -258,6 +263,7 @@ class EspAfe final : public Component, public AudioProcessor {
 #endif
 #ifdef USE_ESP_AFE_GMF_PATH
   bool prepare_feed_input_ring_();
+  bool apply_pending_gmf_vad_state_();
 #endif
   void release_runtime_buffers_();
   void log_memory_snapshot_(const char *label) const;
@@ -305,6 +311,19 @@ class EspAfe final : public Component, public AudioProcessor {
   int staged_input_samples_{0};
   uint8_t output_prebuffer_frames_{0};
   bool output_prebuffer_ready_{true};
+  // ESP-SR 2.5.x accepts agc_init for its dual-mic AFE but omits AGC from the
+  // effective 2MIC pipeline. Run Espressif's public 10 ms WebRTC AGC after the
+  // GMF AFE output instead. A one-quantum FIFO keeps arbitrary AFE fetch frames
+  // aligned while preserving the AGC's required 160-sample cadence.
+  static constexpr size_t kPostAfeAgcQuantumSamples = 160;
+  void *post_afe_agc_{nullptr};
+  int16_t *post_afe_agc_frame_{nullptr};
+  int16_t *post_afe_agc_fifo_{nullptr};
+  size_t post_afe_agc_fifo_capacity_{0};
+  size_t post_afe_agc_fifo_samples_{0};
+  int16_t post_afe_agc_input_[kPostAfeAgcQuantumSamples]{};
+  int16_t post_afe_agc_output_[kPostAfeAgcQuantumSamples]{};
+  size_t post_afe_agc_input_samples_{0};
   // Last mic_channels_in seen by process(); used to drop a partial
   // staged frame if the consumer flips the channel layout without
   // passing through recreate_instance_ first.
@@ -320,6 +339,10 @@ class EspAfe final : public Component, public AudioProcessor {
   RingbufHandle_t feed_input_ring_{nullptr};
   uint8_t *feed_input_ring_storage_{nullptr};
   StaticRingbuffer_t *feed_input_ring_struct_{nullptr};
+  // GMF must see VAD enabled while esp_gmf_afe_open() creates its wake-state
+  // mutex. If YAML requests VAD off, the first safe output callback applies
+  // the disabled state after open has completed.
+  std::atomic<bool> gmf_vad_state_pending_{false};
 #endif
 #ifdef USE_ESP_AFE_DIRECT_PATH
   SemaphoreHandle_t direct_feed_signal_{nullptr};
