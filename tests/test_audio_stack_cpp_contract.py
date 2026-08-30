@@ -14,6 +14,29 @@ def read(name: str) -> str:
     return (AUDIO_STACK / name).read_text(encoding="utf-8")
 
 
+def test_codec_control_adapter_implements_esp_codec_dev_1_6_identity() -> None:
+    cpp = read("codec_dev_backend.cpp")
+    python = read("__init__.py")
+
+    assert 'ESP_CODEC_DEV_REF = "1.6.2"' in python
+    assert "static int ctrl_get_info(" in cpp
+    assert "info->type = AUDIO_CODEC_CTRL_I2C;" in cpp
+    assert "info->i2c.addr = self->address;" in cpp
+    assert "info->i2c.port = static_cast<uint8_t>(self->bus->get_port());" in cpp
+    assert "ctrl->base.get_info = ctrl_get_info;" in cpp
+
+
+def test_codec_backend_primes_i2s_before_esp_codec_dev_reconfiguration() -> None:
+    cpp = read("esp_audio_stack.cpp")
+    opened = cpp[cpp.index("bool ESPAudioStack::enable_i2s_channels_()") : cpp.index("void ESPAudioStack::close_audio_io_()")]
+
+    backend_open = opened.index("this->codec_backend_.open(")
+    assert opened.index("i2s_channel_enable(this->tx_handle_)") < backend_open
+    assert opened.index("i2s_channel_enable(this->rx_handle_)") < backend_open
+    assert "Failed to prime TX I2S channel for esp_codec_dev" in opened
+    assert "Failed to prime RX I2S channel for esp_codec_dev" in opened
+
+
 def test_tdm_16bit_rx_extracts_only_selected_channels() -> None:
     cpp = read("audio_effects_rate_converter.cpp")
 

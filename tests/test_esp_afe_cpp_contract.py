@@ -214,3 +214,15 @@ def test_rebuild_state_is_published_without_racing_live_afe_fields() -> None:
 
     release = cpp[cpp.index("void EspAfe::release_runtime_buffers_()") : cpp.index("\nEspAfe::~EspAfe()")]
     assert "this->direct_feed_signal_ = nullptr;" not in release
+
+
+def test_initial_afe_build_is_reported_as_setup_not_runtime_reinit() -> None:
+    cpp = read("esp_afe.cpp")
+    header = read("esp_afe.h")
+
+    assert "bool setup_complete_{false};" in header
+    assert "const bool initial_setup = !this->setup_complete_;" in cpp
+    assert 'ESP_LOGI(TAG, "AFE setup stage %s took %uus"' in cpp
+    assert 'ESP_LOGI(TAG, "AFE setup total took %uus' in cpp
+    setup = cpp[cpp.index("void EspAfe::setup()") : cpp.index("void EspAfe::dump_config()")]
+    assert setup.index("this->setup_complete_ = true;") > setup.index("this->recreate_instance_(false)")

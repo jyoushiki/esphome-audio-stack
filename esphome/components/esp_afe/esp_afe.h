@@ -288,6 +288,7 @@ class EspAfe final : public Component, public AudioProcessor {
   esp_gmf_task_handle_t afe_task_{nullptr};
 #endif
   afe_config_t *afe_config_{nullptr};
+  bool setup_complete_{false};
   bool afe_pipeline_running_{false};
   bool afe_pipeline_paused_{false};
 #ifdef USE_ESP_AFE_DIRECT_PATH

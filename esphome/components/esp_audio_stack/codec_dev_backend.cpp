@@ -43,7 +43,7 @@ namespace {
 #ifdef USE_I2C
 struct EsphomeI2cCtrl {
   audio_codec_ctrl_if_t base;
-  i2c::I2CBus *bus;
+  i2c::InternalI2CBus *bus;
   uint8_t address;
   bool open;
 };
@@ -116,6 +116,20 @@ static int ctrl_write_reg(const audio_codec_ctrl_if_t *ctrl, int reg, int reg_le
   return result == i2c::NO_ERROR ? ESP_CODEC_DEV_OK : ESP_CODEC_DEV_WRITE_FAIL;
 }
 
+static int ctrl_get_info(const audio_codec_ctrl_if_t *ctrl, audio_codec_ctrl_info_t *info) {
+  if (ctrl == nullptr || info == nullptr) {
+    return ESP_CODEC_DEV_INVALID_ARG;
+  }
+  auto *self = reinterpret_cast<EsphomeI2cCtrl *>(const_cast<audio_codec_ctrl_if_t *>(ctrl));
+  if (self->bus == nullptr) {
+    return ESP_CODEC_DEV_WRONG_STATE;
+  }
+  info->type = AUDIO_CODEC_CTRL_I2C;
+  info->i2c.addr = self->address;
+  info->i2c.port = static_cast<uint8_t>(self->bus->get_port());
+  return ESP_CODEC_DEV_OK;
+}
+
 static int ctrl_close(const audio_codec_ctrl_if_t *ctrl) {
   if (ctrl == nullptr) {
     return ESP_CODEC_DEV_INVALID_ARG;
@@ -144,6 +158,7 @@ const audio_codec_ctrl_if_t *CodecDevBackend::new_i2c_ctrl_(uint8_t address) {
   ctrl->base.is_open = ctrl_is_open;
   ctrl->base.read_reg = ctrl_read_reg;
   ctrl->base.write_reg = ctrl_write_reg;
+  ctrl->base.get_info = ctrl_get_info;
   ctrl->base.close = ctrl_close;
   ctrl->bus = this->i2c_bus_;
   ctrl->address = address;

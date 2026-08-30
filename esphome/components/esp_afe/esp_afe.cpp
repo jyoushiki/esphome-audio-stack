@@ -858,6 +858,7 @@ void EspAfe::clear_process_busy_() {
 }
 
 bool EspAfe::recreate_instance_(bool require_same_frame_sizes) {
+  const bool initial_setup = !this->setup_complete_;
   const int64_t reinit_start_us = esp_timer_get_time();
   int64_t stage_start_us = reinit_start_us;
   auto begin_stage = [&](const char *stage) {
@@ -868,7 +869,11 @@ bool EspAfe::recreate_instance_(bool require_same_frame_sizes) {
     const int64_t now_us = esp_timer_get_time();
     const uint32_t stage_us = static_cast<uint32_t>(std::max<int64_t>(0, now_us - stage_start_us));
     if (stage_us >= REINIT_STAGE_WARN_US) {
-      ESP_LOGW(TAG, "AFE reinit stage %s took %uus", stage, (unsigned) stage_us);
+      if (initial_setup) {
+        ESP_LOGI(TAG, "AFE setup stage %s took %uus", stage, (unsigned) stage_us);
+      } else {
+        ESP_LOGW(TAG, "AFE reinit stage %s took %uus", stage, (unsigned) stage_us);
+      }
     }
     stage_start_us = now_us;
   };
@@ -1075,8 +1080,13 @@ bool EspAfe::recreate_instance_(bool require_same_frame_sizes) {
   release_drain();
   const uint32_t total_us = static_cast<uint32_t>(std::max<int64_t>(0, esp_timer_get_time() - reinit_start_us));
   if (total_us >= REINIT_STAGE_WARN_US) {
-    ESP_LOGW(TAG, "AFE reinit total took %uus (type=%d mode=%d)", (unsigned) total_us, this->afe_type_,
-             this->afe_mode_);
+    if (initial_setup) {
+      ESP_LOGI(TAG, "AFE setup total took %uus (type=%d mode=%d)", (unsigned) total_us, this->afe_type_,
+               this->afe_mode_);
+    } else {
+      ESP_LOGW(TAG, "AFE reinit total took %uus (type=%d mode=%d)", (unsigned) total_us, this->afe_type_,
+               this->afe_mode_);
+    }
   }
   return true;
 }
@@ -1297,6 +1307,7 @@ void EspAfe::setup() {
     this->mark_failed();
     return;
   }
+  this->setup_complete_ = true;
   ESP_LOGI(TAG, "AFE setup complete, runtime prepared and idle (waiting for "
                 "mic consumer)");
 }

@@ -759,7 +759,7 @@ bool ESPAudioStack::prepare_i2s_channels_() {
           this->set_i2s_hardware_state_(I2SHardwareState::ERROR);
           return false;
         }
-        ESP_LOGW(TAG,
+        ESP_LOGI(TAG,
                  "Raised TDM DMA queue for processor frame: desc %u->%u, frames %u "
                  "(processor=%u bus frames, target=%u)",
                  (unsigned) old_desc, (unsigned) dma_desc_num, (unsigned) dma_frame_num,
@@ -1086,6 +1086,23 @@ bool ESPAudioStack::enable_i2s_channels_() {
   }
   if (this->tx_handle_ != nullptr) {
     this->tx_completion_tracking_active_.store(true, std::memory_order_release);
+    const esp_err_t err = i2s_channel_enable(this->tx_handle_);
+    if (err != ESP_OK) {
+      ESP_LOGE(TAG, "Failed to prime TX I2S channel for esp_codec_dev: %s", esp_err_to_name(err));
+      this->deinit_i2s_();
+      return false;
+    }
+  }
+  if (this->rx_handle_ != nullptr) {
+    const esp_err_t err = i2s_channel_enable(this->rx_handle_);
+    if (err != ESP_OK) {
+      ESP_LOGE(TAG, "Failed to prime RX I2S channel for esp_codec_dev: %s", esp_err_to_name(err));
+      if (this->tx_handle_ != nullptr) {
+        i2s_channel_disable(this->tx_handle_);
+      }
+      this->deinit_i2s_();
+      return false;
+    }
   }
   auto tx_cfg = this->make_tx_sample_config_();
   auto rx_cfg = this->make_rx_sample_config_();
