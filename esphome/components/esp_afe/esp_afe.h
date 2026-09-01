@@ -242,7 +242,12 @@ class EspAfe final : public Component, public AudioProcessor {
   bool build_instance_(AfeInstance *instance);
   bool recreate_instance_(bool require_same_frame_sizes);
   void clear_process_busy_();
-  void reset_output_prebuffer_() { this->output_prebuffer_ready_ = this->output_prebuffer_frames_ == 0; }
+  void reset_output_prebuffer_() {
+    this->output_prebuffer_ready_ = this->output_prebuffer_frames_ == 0;
+#ifdef USE_ESP_AFE_GMF_PATH
+    this->gmf_output_frame_used_ = 0;
+#endif
+  }
   bool start_reconfigure_task_();
   static void reconfigure_task_trampoline(void *arg);
   void reconfigure_task_loop_();
@@ -258,6 +263,7 @@ class EspAfe final : public Component, public AudioProcessor {
 #endif
 #ifdef USE_ESP_AFE_GMF_PATH
   bool prepare_feed_input_ring_();
+  bool prepare_gmf_output_frame_();
 #endif
   void release_runtime_buffers_();
   void log_memory_snapshot_(const char *label) const;
@@ -356,6 +362,14 @@ class EspAfe final : public Component, public AudioProcessor {
   bool stop_direct_fetch_task_();
   void destroy_direct_fetch_task_();
 #endif
+#ifdef USE_ESP_AFE_GMF_PATH
+  // GMF may split one AFE result across output callbacks. Reassemble those
+  // fragments before publishing frame-atomic items to fetch_output_ring_.
+  uint8_t *gmf_output_frame_{nullptr};
+  size_t gmf_output_frame_size_{0};
+  size_t gmf_output_frame_used_{0};
+#endif
+
 #ifdef USE_ESP_AFE_GMF_PATH
   static void gmf_event_cb_(esp_gmf_element_handle_t el, esp_gmf_afe_evt_t *event, void *user_data);
 #endif

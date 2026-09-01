@@ -1912,27 +1912,39 @@ esp_gmf_err_io_t EspAfe::gmf_output_release_(esp_gmf_payload_t *load, int wait_t
     return ESP_GMF_IO_FAIL;
   }
 
-  // The GMF element drains every processed sample currently available from
-  // its internal data bus. After scheduler jitter one payload can therefore
-  // contain several complete AFE frames. Keep the NOSPLIT bridge frame-atomic:
-  // its read operation returns a whole item and would otherwise discard every
-  // byte after the first frame copied into the consumer buffer.
+  if (this->gmf_output_frame_ == nullptr || this->gmf_output_frame_size_ != frame_bytes ||
+      this->gmf_output_frame_used_ >= frame_bytes) {
+    diag_add(this->output_ring_drop_);
+    this->gmf_output_frame_used_ = 0;
+    return ESP_GMF_IO_FAIL;
+  }
+
+  // GMF output payload boundaries are transport boundaries, not AFE frame
+  // boundaries. One callback can contain a partial frame or several frames.
+  // Reassemble into one setup-time buffer, then publish only complete frames.
   const auto *src = static_cast<const uint8_t *>(load->buf);
-  const size_t complete_frames = load->valid_size / frame_bytes;
-  for (size_t frame = 0; frame < complete_frames; frame++) {
-    const uint8_t *frame_data = src + frame * frame_bytes;
-    const size_t wrote = this->fetch_output_ring_->write_without_replacement(frame_data, frame_bytes, 0, false);
-    if (wrote != frame_bytes) {
-      diag_add(this->output_ring_drop_);
+  size_t remaining = load->valid_size;
+  while (remaining > 0) {
+    const size_t copy_bytes = std::min(remaining, frame_bytes - this->gmf_output_frame_used_);
+    memcpy(this->gmf_output_frame_ + this->gmf_output_frame_used_, src, copy_bytes);
+    this->gmf_output_frame_used_ += copy_bytes;
+    src += copy_bytes;
+    remaining -= copy_bytes;
+
+    if (this->gmf_output_frame_used_ != frame_bytes) {
       continue;
     }
-    diag_add(this->fetch_ok_);
-    uint32_t queued = diag_increment_and_get(this->fetch_queue_frames_);
-    update_peak_atomic(this->fetch_queue_peak_, queued);
-  }
-  if (load->valid_size % frame_bytes != 0) {
-    ESP_LOGW(TAG, "GMF AFE output size is not frame-aligned (%u bytes, frame=%u)",
-             static_cast<unsigned>(load->valid_size), static_cast<unsigned>(frame_bytes));
+
+    const size_t wrote =
+        this->fetch_output_ring_->write_without_replacement(this->gmf_output_frame_, frame_bytes, 0, false);
+    if (wrote != frame_bytes) {
+      diag_add(this->output_ring_drop_);
+    } else {
+      diag_add(this->fetch_ok_);
+      uint32_t queued = diag_increment_and_get(this->fetch_queue_frames_);
+      update_peak_atomic(this->fetch_queue_peak_, queued);
+    }
+    this->gmf_output_frame_used_ = 0;
   }
   this->update_fetch_ring_free_pct_();
   TaskHandle_t waiter = this->pipeline_flush_waiter_.load(std::memory_order_acquire);
@@ -2583,6 +2595,33 @@ bool EspAfe::prepare_fetch_output_ring_() {
   return true;
 }
 
+#ifdef USE_ESP_AFE_GMF_PATH
+bool EspAfe::prepare_gmf_output_frame_() {
+  const size_t frame_bytes = static_cast<size_t>(std::max(0, this->fetch_chunksize_)) * sizeof(int16_t);
+  if (frame_bytes == 0) {
+    return false;
+  }
+  if (this->gmf_output_frame_ != nullptr && this->gmf_output_frame_size_ == frame_bytes) {
+    this->gmf_output_frame_used_ = 0;
+    return true;
+  }
+  if (this->gmf_output_frame_ != nullptr) {
+    heap_caps_free(this->gmf_output_frame_);
+    this->gmf_output_frame_ = nullptr;
+  }
+  this->gmf_output_frame_ = static_cast<uint8_t *>(heap_caps_malloc(frame_bytes, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+  if (this->gmf_output_frame_ == nullptr) {
+    ESP_LOGE(TAG, "Failed to allocate GMF AFE output frame (%u bytes)", static_cast<unsigned>(frame_bytes));
+    this->gmf_output_frame_size_ = 0;
+    this->gmf_output_frame_used_ = 0;
+    return false;
+  }
+  this->gmf_output_frame_size_ = frame_bytes;
+  this->gmf_output_frame_used_ = 0;
+  return true;
+}
+#endif
+
 #ifdef ESP_AFE_RING_INTEGRITY_DEBUG
 void EspAfe::debug_arm_direct_runtime_() {
   if (this->direct_iface_ == nullptr || this->direct_data_ == nullptr || this->feed_buf_ == nullptr ||
@@ -2662,6 +2701,11 @@ bool EspAfe::prepare_runtime_() {
   if (this->afe_stopped_.load(std::memory_order_acquire)) {
     return true;
   }
+#ifdef USE_ESP_AFE_DIRECT_PATH
+  const bool direct_path = this->direct_data_ != nullptr;
+#else
+  const bool direct_path = false;
+#endif
   this->log_memory_snapshot_("before_afe_prepare_runtime");
 #ifdef USE_ESP_AFE_GMF_PATH
 #ifdef USE_ESP_AFE_DIRECT_PATH
@@ -2679,15 +2723,15 @@ bool EspAfe::prepare_runtime_() {
   if (!this->prepare_fetch_output_ring_()) {
     return false;
   }
+#ifdef USE_ESP_AFE_GMF_PATH
+  if (!direct_path && !this->prepare_gmf_output_frame_()) {
+    return false;
+  }
+#endif
 #ifdef ESP_AFE_RING_INTEGRITY_DEBUG
   this->debug_arm_direct_runtime_();
 #endif
   this->log_memory_snapshot_("after_afe_prepare_runtime");
-#ifdef USE_ESP_AFE_DIRECT_PATH
-  const bool direct_path = this->direct_data_ != nullptr;
-#else
-  const bool direct_path = false;
-#endif
   ESP_LOGI(TAG, "AFE runtime prepared (%s)", direct_path ? "ESP-SR direct single-mic" : "GMF feed/fetch rings");
   return true;
 }
@@ -2705,6 +2749,12 @@ void EspAfe::release_runtime_buffers_() {
   this->fetch_output_ring_.reset();
   this->reset_output_prebuffer_();
 #ifdef USE_ESP_AFE_GMF_PATH
+  if (this->gmf_output_frame_ != nullptr) {
+    heap_caps_free(this->gmf_output_frame_);
+    this->gmf_output_frame_ = nullptr;
+  }
+  this->gmf_output_frame_size_ = 0;
+  this->gmf_output_frame_used_ = 0;
   this->feed_input_ring_ = nullptr;
   if (this->feed_input_ring_storage_ != nullptr) {
     heap_caps_free(this->feed_input_ring_storage_);
