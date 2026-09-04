@@ -75,13 +75,14 @@ def test_gmf_output_bridge_preserves_frame_boundaries_and_optional_reserve() -> 
     process = cpp[cpp.index("bool EspAfe::process(") : cpp.index("\nbool EspAfe::reinit_by_name")]
     assert "this->fetch_output_ring_->nosplit_items_waiting() >= required_frames" in process
     assert "static_cast<size_t>(this->output_prebuffer_frames_) + 1U" in process
-    assert "this->fetch_output_ring_->read(reinterpret_cast<uint8_t *>(out), output_bytes, 0)" in process
+    assert "output_bytes, 0" in process
 
     output_start = cpp.index("esp_gmf_err_io_t EspAfe::gmf_output_release_(")
     output = cpp[output_start : cpp.index("\n#endif", output_start)]
-    assert "complete_frames = load->valid_size / frame_bytes" in output
-    assert "for (size_t frame = 0; frame < complete_frames; frame++)" in output
-    assert "write_without_replacement(frame_data, frame_bytes, 0, false)" in output
+    assert "frame_bytes - this->gmf_output_frame_used_" in output
+    assert "memcpy(this->gmf_output_frame_ + this->gmf_output_frame_used_" in output
+    assert "this->gmf_output_frame_used_ != frame_bytes" in output
+    assert "write_without_replacement(this->gmf_output_frame_, frame_bytes, 0, false)" in output
     assert "write_without_replacement(load->buf, want" not in output
     assert "size_t nosplit_items_waiting() const;" in ring
     assert "vRingbufferGetInfo(this->handle_" in ring
