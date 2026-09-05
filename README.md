@@ -725,9 +725,10 @@ are tracked by this repository's own history.
 
 Espressif dependencies and their pins:
 
-- `esp_codec_dev` `1.5.10` for codec control;
-- `esp_audio_effects` `1.3.0~1` for rate, bit-depth and layout conversion;
-- `esp-dsp` `^1.8.0` and `esp-sr` `^2.4.6` for the processors;
+- `esp_codec_dev` `^1.6.2` for codec control;
+- `esp_audio_effects` `^1.4.2` for rate, bit-depth and layout conversion,
+  or `~1.3` on pre-v3 ESP32-P4 silicon, which cannot execute the newer binaries;
+- `esp-dsp` `^1.8.0` and `esp-sr` `^2.5.3` for the processors;
 - dual-mic `gmf_ai_audio` from the pinned
   `n-IA-hane/esp-gmf` ref `gmf-ai-audio-esp-sr-2.4.6`.
 
