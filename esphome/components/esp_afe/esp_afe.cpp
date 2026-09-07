@@ -1677,10 +1677,15 @@ bool EspAfe::process(const int16_t *in_mic, const int16_t *in_ref, int16_t *out,
   if (this->fetch_output_ring_) {
     if (!this->output_prebuffer_ready_) {
       const size_t required_frames = static_cast<size_t>(this->output_prebuffer_frames_) + 1U;
-      this->output_prebuffer_ready_ = this->fetch_output_ring_->nosplit_items_waiting() >= required_frames;
+      const size_t queued_frames = gmf_path ? this->fetch_output_ring_->available() / output_bytes
+                                            : this->fetch_output_ring_->nosplit_items_waiting();
+      this->output_prebuffer_ready_ = queued_frames >= required_frames;
     }
   }
-  if (this->fetch_output_ring_ && this->output_prebuffer_ready_) {
+  // Only this consumer removes bytes. GMF can append a partial frame, so
+  // leave it queued until a complete output frame is available.
+  if (this->fetch_output_ring_ && this->output_prebuffer_ready_ &&
+      (!gmf_path || this->fetch_output_ring_->available() >= output_bytes)) {
     size_t got = this->fetch_output_ring_->read(reinterpret_cast<uint8_t *>(out), output_bytes, 0);
     if (got == output_bytes) {
       processed = true;
@@ -1901,27 +1906,17 @@ esp_gmf_err_io_t EspAfe::gmf_output_release_(esp_gmf_payload_t *load, int wait_t
     return ESP_GMF_IO_FAIL;
   }
 
-  // The GMF element drains every processed sample currently available from
-  // its internal data bus. After scheduler jitter one payload can therefore
-  // contain several complete AFE frames. Keep the NOSPLIT bridge frame-atomic:
-  // its read operation returns a whole item and would otherwise discard every
-  // byte after the first frame copied into the consumer buffer.
-  const auto *src = static_cast<const uint8_t *>(load->buf);
-  const size_t complete_frames = load->valid_size / frame_bytes;
-  for (size_t frame = 0; frame < complete_frames; frame++) {
-    const uint8_t *frame_data = src + frame * frame_bytes;
-    const size_t wrote = this->fetch_output_ring_->write_without_replacement(frame_data, frame_bytes, 0, false);
-    if (wrote != frame_bytes) {
-      diag_add(this->output_ring_drop_);
-      continue;
-    }
-    diag_add(this->fetch_ok_);
-    uint32_t queued = diag_increment_and_get(this->fetch_queue_frames_);
+  // GMF drains a byte stream, not necessarily whole fetch frames. Preserve
+  // every sample in the single bridge; process() consumes complete frames.
+  const size_t pending_bytes = this->fetch_output_ring_->available() % frame_bytes;
+  const size_t wrote = this->fetch_output_ring_->write_without_replacement(load->buf, load->valid_size, 0, false);
+  if (wrote != load->valid_size) {
+    diag_add(this->output_ring_drop_);
+  } else {
+    diag_add(this->fetch_ok_, (pending_bytes + wrote) / frame_bytes);
+    const uint32_t queued = this->fetch_output_ring_->available() / frame_bytes;
+    this->fetch_queue_frames_.store(queued, std::memory_order_relaxed);
     update_peak_atomic(this->fetch_queue_peak_, queued);
-  }
-  if (load->valid_size % frame_bytes != 0) {
-    ESP_LOGW(TAG, "GMF AFE output size is not frame-aligned (%u bytes, frame=%u)",
-             static_cast<unsigned>(load->valid_size), static_cast<unsigned>(frame_bytes));
   }
   this->update_fetch_ring_free_pct_();
   TaskHandle_t waiter = this->pipeline_flush_waiter_.load(std::memory_order_acquire);
@@ -2552,16 +2547,24 @@ bool EspAfe::prepare_fetch_output_ring_() {
   }
 
   if (!this->fetch_output_ring_) {
-    // NOSPLIT keeps each processed AFE frame atomic. process() either receives
-    // a whole frame or emits silence; it never consumes a short byte-buffer
-    // read that would shift the microphone surface seen by MWW/VA/call
-    // components.
     const size_t frame_bytes = static_cast<size_t>(this->fetch_chunksize_) * sizeof(int16_t);
     const size_t ring_bytes = (frame_bytes + RINGBUFFER_ITEM_HEADER_BYTES) * BRIDGE_RING_FRAMES;
-    this->fetch_output_ring_ =
-        this->fetch_ring_in_psram_
-            ? esp_audio_stack::create_nosplit_prefer_psram(ring_bytes, "esp_afe.fetch_output_ring")
-            : esp_audio_stack::create_nosplit_internal(ring_bytes, "esp_afe.fetch_output_ring");
+#ifdef USE_ESP_AFE_GMF_PATH
+    if (this->afe_manager_ != nullptr) {
+      // GMF payload boundaries are independent of the consumer frame size.
+      this->fetch_output_ring_ =
+          this->fetch_ring_in_psram_
+              ? esp_audio_stack::create_prefer_psram(ring_bytes, "esp_afe.fetch_output_ring")
+              : esp_audio_stack::create_internal(ring_bytes, "esp_afe.fetch_output_ring");
+    } else
+#endif
+    {
+      // The direct AFE fetch API returns complete frames.
+      this->fetch_output_ring_ =
+          this->fetch_ring_in_psram_
+              ? esp_audio_stack::create_nosplit_prefer_psram(ring_bytes, "esp_afe.fetch_output_ring")
+              : esp_audio_stack::create_nosplit_internal(ring_bytes, "esp_afe.fetch_output_ring");
+    }
     if (!this->fetch_output_ring_) {
       ESP_LOGE(TAG, "Failed to allocate AFE fetch output ring buffer");
       return false;
