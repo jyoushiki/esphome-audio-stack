@@ -1852,20 +1852,36 @@ esp_gmf_err_io_t EspAfe::gmf_input_acquire_(esp_gmf_payload_t *load, uint32_t wa
   if (load == nullptr || load->buf == nullptr || wanted_size == 0 || this->feed_input_ring_ == nullptr) {
     return ESP_GMF_IO_FAIL;
   }
-  if (!this->processing_active_.load(std::memory_order_acquire)) {
-    memset(load->buf, 0, wanted_size);
-    load->valid_size = wanted_size;
-    return ESP_GMF_IO_OK;
+  const bool active_at_entry = this->processing_active_.load(std::memory_order_acquire);
+  TickType_t read_wait = static_cast<TickType_t>(wait_ticks);
+  if (!active_at_entry) {
+    // GMF treats IO_ABORT as a cooperative interruption, not valid PCM. Do
+    // not synthesize an unlimited stream of zero frames while the caller is
+    // trying to pause: its higher-priority feed task would starve that caller.
+    // The existing flush item wakes this read. Bound an otherwise infinite
+    // wait by one 16-kHz AFE frame so the pipeline can observe its pause action.
+    const uint32_t frame_ms = static_cast<uint32_t>(std::max(1, this->feed_chunksize_) + 15) / 16;
+    const TickType_t frame_wait = std::max<TickType_t>(1, pdMS_TO_TICKS(frame_ms));
+    read_wait = std::min(read_wait, frame_wait);
   }
 
   size_t item_size = 0;
-  void *item = xRingbufferReceive(this->feed_input_ring_, &item_size, wait_ticks);
+  void *item = xRingbufferReceive(this->feed_input_ring_, &item_size, read_wait);
   if (item == nullptr) {
+    if (!active_at_entry || !this->processing_active_.load(std::memory_order_acquire)) {
+      load->valid_size = 0;
+      return ESP_GMF_IO_ABORT;
+    }
     diag_add(this->feed_rejected_);
     return ESP_GMF_IO_TIMEOUT;
   }
 
   decrement_if_nonzero(this->feed_queue_frames_);
+  if (!this->processing_active_.load(std::memory_order_acquire)) {
+    vRingbufferReturnItem(this->feed_input_ring_, item);
+    load->valid_size = 0;
+    return ESP_GMF_IO_ABORT;
+  }
   esp_gmf_err_io_t ret = ESP_GMF_IO_FAIL;
   if (item_size == static_cast<size_t>(wanted_size) && load->buf_length >= wanted_size) {
     const int64_t feed_start_us = ESP_AFE_TIMING_TELEMETRY ? esp_timer_get_time() : 0;
