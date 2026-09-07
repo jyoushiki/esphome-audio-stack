@@ -674,6 +674,12 @@ void ESPAudioStack::audio_session_() {
   uint64_t t_frame_interval_sum_us = 0;
   uint32_t t_frame_interval_max_us = 0;
   uint32_t t_frame_interval_samples = 0;
+  uint64_t t_rx_sum_us = 0;
+  uint64_t t_process_sum_us = 0;
+  uint64_t t_tx_sum_us = 0;
+  uint32_t t_rx_max_us = 0;
+  uint32_t t_process_max_us = 0;
+  uint32_t t_tx_max_us = 0;
 #ifdef USE_AUDIO_PROCESSOR
   ProcessorTelemetry prev_processor_telem{};
 #endif
@@ -815,20 +821,41 @@ void ESPAudioStack::audio_session_() {
 #endif
     ctx.now_ms = millis();
 
+#if defined(USE_ESP_AUDIO_STACK_TELEMETRY) && ESPHOME_LOG_LEVEL >= ESPHOME_LOG_LEVEL_DEBUG
+    const int64_t rx_start_us = esp_timer_get_time();
+#endif
     if (ctx.need_rx_processing) {
       this->process_rx_path_(ctx);
     } else if (ctx.need_rx_drain) {
       this->drain_rx_minimal_(ctx);
     }
+#if defined(USE_ESP_AUDIO_STACK_TELEMETRY) && ESPHOME_LOG_LEVEL >= ESPHOME_LOG_LEVEL_DEBUG
+    const uint32_t rx_elapsed_us = static_cast<uint32_t>(esp_timer_get_time() - rx_start_us);
+    t_rx_sum_us += rx_elapsed_us;
+    t_rx_max_us = std::max(t_rx_max_us, rx_elapsed_us);
 
+    const int64_t process_start_us = esp_timer_get_time();
+#endif
     if (ctx.need_rx_processing) {
       this->process_aec_and_callbacks_(ctx);
     }
+#if defined(USE_ESP_AUDIO_STACK_TELEMETRY) && ESPHOME_LOG_LEVEL >= ESPHOME_LOG_LEVEL_DEBUG
+    const uint32_t process_elapsed_us = static_cast<uint32_t>(esp_timer_get_time() - process_start_us);
+    t_process_sum_us += process_elapsed_us;
+    t_process_max_us = std::max(t_process_max_us, process_elapsed_us);
+
+    const int64_t tx_start_us = esp_timer_get_time();
+#endif
     if (ctx.clock_only_tx) {
       this->process_tx_clock_only_(ctx);
     } else if (ctx.need_tx_audio) {
       this->process_tx_path_(ctx);
     }
+#if defined(USE_ESP_AUDIO_STACK_TELEMETRY) && ESPHOME_LOG_LEVEL >= ESPHOME_LOG_LEVEL_DEBUG
+    const uint32_t tx_elapsed_us = static_cast<uint32_t>(esp_timer_get_time() - tx_start_us);
+    t_tx_sum_us += tx_elapsed_us;
+    t_tx_max_us = std::max(t_tx_max_us, tx_elapsed_us);
+#endif
 
 #ifdef USE_AUDIO_PROCESSOR
     // Frame_spec change, for example an AFE mode or graph rebuild: exit this
@@ -875,6 +902,11 @@ void ESPAudioStack::audio_session_() {
                  (unsigned) t_frame_count, (unsigned) frame_interval_avg_us, (unsigned) t_frame_interval_max_us,
                  (unsigned) t_spk_underruns, (unsigned) heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
                  (unsigned) heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
+        ESP_LOGD(TAG,
+                 "Audio stages avg/max us: rx=%u/%u process=%u/%u tx=%u/%u",
+                 (unsigned) (t_rx_sum_us / t_frame_count), (unsigned) t_rx_max_us,
+                 (unsigned) (t_process_sum_us / t_frame_count), (unsigned) t_process_max_us,
+                 (unsigned) (t_tx_sum_us / t_frame_count), (unsigned) t_tx_max_us);
 #ifdef USE_AUDIO_PROCESSOR
         if (this->processor_ != nullptr) {
           ProcessorTelemetry telem = this->processor_->telemetry();
@@ -910,6 +942,12 @@ void ESPAudioStack::audio_session_() {
         t_frame_interval_sum_us = 0;
         t_frame_interval_max_us = 0;
         t_frame_interval_samples = 0;
+        t_rx_sum_us = 0;
+        t_process_sum_us = 0;
+        t_tx_sum_us = 0;
+        t_rx_max_us = 0;
+        t_process_max_us = 0;
+        t_tx_max_us = 0;
       }
     }
 #endif
@@ -1001,8 +1039,20 @@ void ESPAudioStack::fail_audio_session_(const char *stage) {
 // RX PATH: I2S read -> deinterleave/rate-convert -> mic_buffer + spk_ref_buffer
 // ════════════════════════════════════════════════════════════════════════════
 void ESPAudioStack::process_rx_path_(AudioTaskCtx &ctx) {
+#if defined(USE_ESP_AUDIO_STACK_TELEMETRY) && ESPHOME_LOG_LEVEL >= ESPHOME_LOG_LEVEL_DEBUG
+  static uint64_t read_sum_us = 0;
+  static uint64_t convert_sum_us = 0;
+  static uint32_t read_max_us = 0;
+  static uint32_t convert_max_us = 0;
+  static uint8_t samples = 0;
+  const int64_t read_start_us = esp_timer_get_time();
+#endif
   if (!this->read_rx_frame_(ctx, "audio"))
     return;
+#if defined(USE_ESP_AUDIO_STACK_TELEMETRY) && ESPHOME_LOG_LEVEL >= ESPHOME_LOG_LEVEL_DEBUG
+  const uint32_t read_us = static_cast<uint32_t>(esp_timer_get_time() - read_start_us);
+  const int64_t convert_start_us = esp_timer_get_time();
+#endif
 
 #ifdef USE_ESP_AUDIO_STACK_TDM_BUS
   if (ctx.use_tdm_bus && ctx.any_tdm_slot_level_sensor_enabled) {
@@ -1015,6 +1065,23 @@ void ESPAudioStack::process_rx_path_(AudioTaskCtx &ctx) {
   if (!this->convert_rx_frame_(ctx)) {
     return;
   }
+#if defined(USE_ESP_AUDIO_STACK_TELEMETRY) && ESPHOME_LOG_LEVEL >= ESPHOME_LOG_LEVEL_DEBUG
+  const uint32_t convert_us = static_cast<uint32_t>(esp_timer_get_time() - convert_start_us);
+  read_sum_us += read_us;
+  convert_sum_us += convert_us;
+  read_max_us = std::max(read_max_us, read_us);
+  convert_max_us = std::max(convert_max_us, convert_us);
+  if (++samples == this->telemetry_log_interval_frames_) {
+    ESP_LOGD(TAG, "RX detail avg/max us: i2s=%u/%u convert=%u/%u",
+             (unsigned) (read_sum_us / samples), (unsigned) read_max_us,
+             (unsigned) (convert_sum_us / samples), (unsigned) convert_max_us);
+    read_sum_us = 0;
+    convert_sum_us = 0;
+    read_max_us = 0;
+    convert_max_us = 0;
+    samples = 0;
+  }
+#endif
   this->apply_input_conditioning_(ctx);
 }
 
@@ -1624,6 +1691,16 @@ bool ESPAudioStack::write_tx_dma_blocks_(AudioTaskCtx &ctx, void *tx_data, size_
              (unsigned) tx_bytes, (unsigned) this->tx_completion_dma_buffer_bytes_);
     this->has_i2s_error_.store(true, std::memory_order_relaxed);
     this->audio_stack_running_.store(false, std::memory_order_relaxed);
+    return false;
+  }
+
+  // A long DSP frame can leave clock-only completion callbacks queued while
+  // no application write is pending. Retire those callbacks immediately
+  // before reserving records for the next write, otherwise a recycled-silence
+  // callback can fill the queue after pending_real_records becomes non-zero
+  // and falsely turn an idle clock interval into a TX desynchronization.
+  this->drain_tx_completion_events_();
+  if (this->has_i2s_error_.load(std::memory_order_relaxed)) {
     return false;
   }
 

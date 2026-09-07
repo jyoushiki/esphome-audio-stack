@@ -79,8 +79,8 @@ def test_realtime_audio_loop_has_no_tick_delay_or_effect_allocator() -> None:
     assert "t_frame_interval_max_us" in cpp
 
 
-def test_idle_tx_completion_overflow_preserves_full_duplex_capture() -> None:
-    """Clock-only DMA callbacks may outpace the audio task during Wi-Fi startup."""
+def test_idle_tx_completions_cannot_consume_real_audio_records() -> None:
+    """Clock-only DMA callbacks advance a counter and never occupy the record queue."""
     cpp = read("esp_audio_stack.cpp")
     header = read("esp_audio_stack.h")
     callback = cpp[
@@ -88,11 +88,11 @@ def test_idle_tx_completion_overflow_preserves_full_duplex_capture() -> None:
         cpp.index("bool ESPAudioStack::prepare_tx_completion_tracking_")
     ]
 
-    assert "tx_completion_idle_event_drops_" in header
-    assert "tx_completion_pending_real_records_.load" in callback
-    assert "self->tx_completion_desync_ = true" in callback
-    assert "self->tx_completion_idle_event_drops_.fetch_add" in callback
-    assert "Discarded %u idle TX completion events" in cpp
+    assert "std::atomic<uint32_t> tx_completion_count_" in header
+    assert "tx_completion_count_.fetch_add" in callback
+    assert "xQueue" not in callback
+    assert "record.real_frames == 0" in cpp
+    assert "return true" in cpp[cpp.index("if (record.real_frames == 0") :]
 
 
 def test_tx_completion_tracking_is_session_scoped() -> None:
@@ -165,7 +165,9 @@ def test_speaker_output_callbacks_follow_i2s_completion_not_buffer_acceptance() 
 
     assert "add_speaker_output_callback" in speaker_cpp
     assert "audio_output_callback_.call(frames, timestamp)" in speaker_cpp
-    assert "xQueueSendToBackFromISR" in dma_callback
+    assert "tx_completion_count_.fetch_add" in dma_callback
+    assert "xQueueSendToBackFromISR" not in dma_callback
+    assert "record.due_completion <= completed" in completion_drain
     assert "dispatch_speaker_output_callbacks_" in completion_drain
     assert "record.real_frames" in completion_drain
     assert "record.trailing_silence_frames" in completion_drain
@@ -198,3 +200,38 @@ def test_failed_tx_write_cannot_leave_stale_completion_metadata() -> None:
     assert dma_write.count("mark_tx_completion_desync_") == 2
     assert "if (!this->write_tx_frame_(ctx, tx_data, tx_bytes))" in dma_write
     assert "if (!this->write_tx_frame_(ctx, bytes + offset" in dma_write
+
+
+def test_i2s_preallocation_is_opt_in_and_preserves_channels_while_idle() -> None:
+    schema = read("__init__.py")
+    header = read("esp_audio_stack.h")
+    source = read("esp_audio_stack.cpp")
+
+    assert 'CONF_PREALLOCATE_I2S_CHANNELS = "preallocate_i2s_channels"' in schema
+    assert "set_preallocate_i2s_channels" in schema
+    assert "bool preallocate_i2s_channels_{false};" in header
+    assert "this->preallocate_i2s_channels_ && !this->prepare_i2s_channels_()" in source
+    assert source.count("if (this->preallocate_i2s_channels_)") >= 2
+
+
+def test_idle_completion_events_are_retired_immediately_before_tx_records() -> None:
+    """A long DSP frame must not leave stale idle callbacks ahead of TX data."""
+    pipeline = read("audio_pipeline.cpp")
+    write = pipeline[
+        pipeline.index("bool ESPAudioStack::write_tx_dma_blocks_") :
+        pipeline.index("void ESPAudioStack::process_tx_clock_only_")
+    ]
+
+    assert write.index("drain_tx_completion_events_()") < write.index(
+        "queue_tx_completion_record_(record)"
+    )
+
+
+def test_completion_drain_has_no_realtime_logging() -> None:
+    source = read("esp_audio_stack.cpp")
+    drain = source[
+        source.index("void ESPAudioStack::drain_tx_completion_events_()") :
+        source.index("bool ESPAudioStack::queue_tx_completion_record_")
+    ]
+    assert "ESP_LOGW" not in drain
+    assert "ESP_LOGE" not in drain

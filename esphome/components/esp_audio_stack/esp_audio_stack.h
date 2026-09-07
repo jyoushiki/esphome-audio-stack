@@ -423,6 +423,7 @@ class ESPAudioStack final : public Component {
   void set_task_core(int8_t core) { this->task_core_ = core; }
   void set_task_stack_size(uint32_t size) { this->task_stack_size_ = size; }
   void set_dma_desc_num(uint32_t desc_num) { this->dma_desc_num_ = desc_num; }
+  void set_preallocate_i2s_channels(bool preallocate) { this->preallocate_i2s_channels_ = preallocate; }
   void set_dma_frame_num(uint32_t frame_num) {
     this->dma_frame_num_ = frame_num;
     this->dma_frame_num_configured_ = true;
@@ -605,6 +606,7 @@ class ESPAudioStack final : public Component {
   bool wait_audio_task_idle_(uint32_t timeout_ms) { return this->wait_audio_task_state_(true, timeout_ms); }
 
   struct TxCompletionRecord {
+    uint32_t due_completion{0};
     uint32_t real_frames{0};
     uint32_t trailing_silence_frames{0};
   };
@@ -757,17 +759,17 @@ class ESPAudioStack final : public Component {
   SpeakerOutputCallbackSlot speaker_output_callbacks_[MAX_LISTENERS]{};
   size_t speaker_output_callback_count_{0};
 
-  QueueHandle_t tx_completion_event_queue_{nullptr};
   QueueHandle_t tx_completion_record_queue_{nullptr};
   uint8_t *tx_completion_silence_{nullptr};
   size_t tx_completion_silence_bytes_{0};
   size_t tx_completion_queue_size_{0};
+  size_t tx_completion_dma_desc_count_{0};
   size_t tx_completion_dma_buffer_bytes_{0};
   uint32_t tx_completion_dma_frames_{0};
   std::atomic<bool> tx_completion_tracking_active_{false};
-  volatile bool tx_completion_desync_{false};
+  std::atomic<uint32_t> tx_completion_count_{0};
+  uint32_t tx_completion_next_due_{0};
   std::atomic<uint32_t> tx_completion_pending_real_records_{0};
-  std::atomic<uint32_t> tx_completion_idle_event_drops_{0};
 
   // Speaker ring buffer: stores data at bus rate (sample_rate_)
   RingBufferPtr speaker_buffer_;
@@ -826,6 +828,7 @@ class ESPAudioStack final : public Component {
   int8_t task_core_{0};        // Core 0: canonical Espressif AEC pattern; -1 = unpinned
   uint32_t task_stack_size_{8192};
   uint32_t dma_desc_num_{6};
+  bool preallocate_i2s_channels_{false};
   uint32_t dma_frame_num_{0};
   bool dma_frame_num_configured_{false};
   bool buffers_in_psram_{false};           // Non-DMA buffers in PSRAM (saves ~15KB internal RAM)

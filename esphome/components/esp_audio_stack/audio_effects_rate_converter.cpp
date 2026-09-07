@@ -150,13 +150,21 @@ class RateCvtHandle {
 
   void init(uint32_t ratio, uint32_t src_rate, uint32_t dest_rate, uint8_t channels, uint8_t complexity,
             uint8_t perf_type) {
+    const uint8_t normalized_complexity = std::min<uint8_t>(std::max<uint8_t>(complexity, 1), 3);
+    const esp_ae_rate_cvt_perf_type_t normalized_perf_type =
+        perf_type == 0 ? ESP_AE_RATE_CVT_PERF_TYPE_MEMORY : ESP_AE_RATE_CVT_PERF_TYPE_SPEED;
+    if (this->ratio_ == ratio && this->src_rate_ == src_rate && this->dest_rate_ == dest_rate &&
+        this->channels_ == channels && this->complexity_ == normalized_complexity &&
+        this->perf_type_ == normalized_perf_type) {
+      return;
+    }
+    this->close_handle_();
     this->ratio_ = ratio;
     this->src_rate_ = src_rate;
     this->dest_rate_ = dest_rate;
     this->channels_ = channels;
-    this->complexity_ = std::min<uint8_t>(std::max<uint8_t>(complexity, 1), 3);
-    this->perf_type_ = perf_type == 0 ? ESP_AE_RATE_CVT_PERF_TYPE_MEMORY : ESP_AE_RATE_CVT_PERF_TYPE_SPEED;
-    this->close_handle_();
+    this->complexity_ = normalized_complexity;
+    this->perf_type_ = normalized_perf_type;
   }
 
   void reset() { this->close_handle_(); }
