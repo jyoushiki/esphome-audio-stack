@@ -1,10 +1,16 @@
 """Exercise the real GMF input callback's cooperative cancellation contract."""
+
 from pathlib import Path
 import subprocess
-ROOT=Path(__file__).resolve().parents[1]
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
 def test_inactive_input_aborts_instead_of_generating_pcm(tmp_path):
- s=(ROOT/'esphome/components/esp_afe/esp_afe.cpp').read_text();a=s.index('esp_gmf_err_io_t EspAfe::gmf_input_acquire_(');b=s.index('\nesp_gmf_err_io_t EspAfe::gmf_output_release_',a)
- harness=r'''
+    s = (ROOT / "esphome/components/esp_afe/esp_afe.cpp").read_text()
+    a = s.index("esp_gmf_err_io_t EspAfe::gmf_input_acquire_(")
+    b = s.index("\nesp_gmf_err_io_t EspAfe::gmf_output_release_", a)
+    harness = r"""
 #include <atomic>
 #include <algorithm>
 #include <cassert>
@@ -28,8 +34,8 @@ struct EspAfe {
  std::atomic<uint32_t> feed_rejected_{0},feed_queue_frames_{0},feed_us_last_{0},feed_us_max_{0},feed_ok_{0};
  esp_gmf_err_io_t gmf_input_acquire_(esp_gmf_payload_t*,uint32_t,int);
 };
-'''
- checks=r'''
+"""
+    checks = r"""
 int main(){
  EspAfe afe;uint8_t output[8]={};esp_gmf_payload_t load{output,8,8};
  assert(afe.gmf_input_acquire_(&load,8,-1)==ESP_GMF_IO_ABORT);
@@ -53,5 +59,9 @@ int main(){
  assert(afe.gmf_input_acquire_(&load,8,20)==ESP_GMF_IO_OK);
  assert(returned==4 && afe.feed_ok_==2);
 }
-'''
- cpp=tmp_path/'input.cpp';cpp.write_text(harness+s[a:b]+checks);exe=tmp_path/'input';subprocess.run(['g++','-std=c++17','-O2',str(cpp),'-o',str(exe)],check=True);subprocess.run([str(exe)],check=True)
+"""
+    cpp = tmp_path / "input.cpp"
+    cpp.write_text(harness + s[a:b] + checks)
+    exe = tmp_path / "input"
+    subprocess.run(["g++", "-std=c++17", "-O2", str(cpp), "-o", str(exe)], check=True)
+    subprocess.run([str(exe)], check=True)

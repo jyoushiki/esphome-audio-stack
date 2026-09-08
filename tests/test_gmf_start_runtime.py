@@ -1,14 +1,16 @@
 """A cold GMF start must let the element attach callbacks before worker wakeup."""
+
 from pathlib import Path
 import subprocess
+
 ROOT = Path(__file__).resolve().parents[1]
 
 
 def test_cold_start_waits_for_gmf_callback_owner(tmp_path):
-    source=(ROOT/'esphome/components/esp_afe/esp_afe.cpp').read_text()
-    start=source.index('bool EspAfe::start_pipeline_()')
-    stop=source.index('\nbool EspAfe::pause_pipeline_()',start)
-    harness=r'''
+    source = (ROOT / "esphome/components/esp_afe/esp_afe.cpp").read_text()
+    start = source.index("bool EspAfe::start_pipeline_()")
+    stop = source.index("\nbool EspAfe::pause_pipeline_()", start)
+    harness = r"""
 #include <atomic>
 #include <cassert>
 #define USE_ESP_AFE_GMF_PATH
@@ -31,8 +33,8 @@ struct EspAfe {
  void drain_feed_input_ring_(){} void reset_output_prebuffer_(){} void reset_post_afe_agc_(){}
  bool start_pipeline_();
 };
-'''
-    checks=r'''
+"""
+    checks = r"""
 int main(){
  EspAfe afe;
  assert(afe.start_pipeline_());
@@ -44,7 +46,9 @@ int main(){
  afe.afe_pipeline_running_=false;afe.afe_pipeline_paused_=false;opened=false;run_result=-1;
  assert(!afe.start_pipeline_());assert(resumes==2 && !afe.afe_pipeline_running_);
 }
-'''
-    cpp=tmp_path/'start.cpp';cpp.write_text(harness+source[start:stop]+checks);exe=tmp_path/'start'
-    subprocess.run(['g++','-std=c++17','-O2',str(cpp),'-o',str(exe)],check=True)
-    subprocess.run([str(exe)],check=True)
+"""
+    cpp = tmp_path / "start.cpp"
+    cpp.write_text(harness + source[start:stop] + checks)
+    exe = tmp_path / "start"
+    subprocess.run(["g++", "-std=c++17", "-O2", str(cpp), "-o", str(exe)], check=True)
+    subprocess.run([str(exe)], check=True)
