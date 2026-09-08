@@ -60,7 +60,10 @@ Configuration variables:
 - **vad_mute_playback**, **vad_enable_channel_trigger**, **continuous_vad**
   (*Optional*, boolean): Optional VAD playback/channel/standby behavior.
 - **agc_compression_gain**, **agc_target_level** (*Optional*, int): AGC level
-  controls. NS/AGC changes rebuild the AFE.
+  controls. NS/AGC changes rebuild the AFE. ESP-SR 2.5.3 omits AGC from its
+  effective dual-microphone graph, so dual-mic profiles apply the public
+  WebRTC AGC to complete processed mono frames after the AFE. This adds a
+  fixed 10 ms causal delay.
 - **memory_alloc_mode** (*Optional*, string): ``more_internal``,
   ``internal_psram_balance`` or ``more_psram``. Defaults to ``more_psram``.
 - **afe_linear_gain** (*Optional*, float): Output multiplier, ``0.1`` to
@@ -105,3 +108,9 @@ See Also
 - :doc:`/components/esp_aec`
 - :apiref:`esp_afe/esp_afe.h`
 - :ghedit:`Edit`
+
+Optional dual-mic AGC compilation: `post_afe_agc_support` accepts `auto`
+(default), `true`, or `false`. Auto includes support when dual-mic AGC starts
+enabled or has an AGC switch. Use true for later activation from a lambda.
+False rejects enabled AGC and its switch. The optional adapter uses 640 bytes
+of PCM state plus the AGC handle, with a fixed 10 ms delay.

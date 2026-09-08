@@ -1,7 +1,7 @@
 # Codec-less STD I2S dual-mic: two MEMS on one Philips data line.
 # Single-mic remains rx_slot_mode: stereo + mic_channel without rx_mic_slots.
 esphome:
-  name: test-esp-audio-stack-std-dual-mic
+  name: test-std-dual-mic
 
 esp32:
   board: esp32-s3-devkitc-1

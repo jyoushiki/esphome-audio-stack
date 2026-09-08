@@ -3,6 +3,7 @@ import esphome.codegen as cg
 from esphome.components import psram
 from esphome.components.esp32 import add_idf_component
 import esphome.config_validation as cv
+import esphome.final_validate as fv
 from esphome.const import CONF_ID, CONF_MODE, CONF_TYPE, Framework
 from esphome.core import CORE
 
@@ -55,6 +56,7 @@ CONF_SE_ENABLED = "se_enabled"
 CONF_NS_ENABLED = "ns_enabled"
 CONF_VAD_ENABLED = "vad_enabled"
 CONF_AGC_ENABLED = "agc_enabled"
+CONF_POST_AFE_AGC_SUPPORT = "post_afe_agc_support"
 CONF_AGC_COMPRESSION_GAIN = "agc_compression_gain"
 CONF_AGC_TARGET_LEVEL = "agc_target_level"
 CONF_VAD_MODE = "vad_mode"
@@ -155,6 +157,9 @@ CONFIG_SCHEMA = cv.All(
             # a runtime feature, but prevents boot/background mic ownership.
             cv.Optional(CONF_CONTINUOUS_VAD, default=False): cv.boolean,
             cv.Optional(CONF_AGC_ENABLED, default=True): cv.boolean,
+            cv.Optional(CONF_POST_AFE_AGC_SUPPORT, default="auto"): cv.Any(
+                cv.boolean, cv.one_of("auto", lower=True)
+            ),
             cv.Optional(CONF_AGC_COMPRESSION_GAIN, default=9): cv.int_range(
                 min=0, max=30
             ),
@@ -214,6 +219,31 @@ CONFIG_SCHEMA = cv.All(
 )
 
 
+def _post_agc_required(config):
+    if config[CONF_MIC_NUM] < 2:
+        return False
+    switches = fv.full_config.get().get("switch", [])
+    has_switch = any(
+        switch.get("platform") == "esp_afe"
+        and switch.get(CONF_ESP_AFE_ID) == config[CONF_ID]
+        and "agc" in switch
+        for switch in switches
+    )
+    requested = config[CONF_AGC_ENABLED] or has_switch
+    support = config[CONF_POST_AFE_AGC_SUPPORT]
+    if support is False and requested:
+        raise cv.Invalid("post_afe_agc_support: false conflicts with dual-mic AGC or its switch")
+    return support is True or (support == "auto" and requested)
+
+
+def _final_validate_post_agc(config):
+    config[CONF_POST_AFE_AGC_SUPPORT] = _post_agc_required(config)
+    return config
+
+
+FINAL_VALIDATE_SCHEMA = _final_validate_post_agc
+
+
 async def to_code(config):
     var = cg.new_Pvariable(config[CONF_ID])
     await cg.register_component(var, config)
@@ -255,6 +285,8 @@ async def to_code(config):
     cg.add(var.set_output_prebuffer_frames(config[CONF_OUTPUT_PREBUFFER_FRAMES]))
 
     cg.add_define("USE_AUDIO_PROCESSOR")
+    if config[CONF_POST_AFE_AGC_SUPPORT]:
+        cg.add_define("USE_ESP_AFE_POST_AGC")
 
     # esp-sr 2.4.x requires esp-dsp >=1.8.0. Declare the lower bound here so
     # downstream audio consumers do not inherit an older transitive esp-dsp pin.

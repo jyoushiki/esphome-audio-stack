@@ -133,6 +133,64 @@ static inline void silence_frame(int16_t *out, int output_samples) {
   }
 }
 
+#ifdef USE_ESP_AFE_POST_AGC
+bool EspAfe::prepare_post_afe_agc_() {
+  this->release_post_afe_agc_();
+  if (this->mic_num_ < 2 || !this->agc_enabled_.load(std::memory_order_relaxed))
+    return true;
+  this->post_afe_agc_ = esp_agc_open(AGC_MODE_2, 16000);
+  if (this->post_afe_agc_ == nullptr) {
+    ESP_LOGE(TAG, "Failed to create dual-mic post-AFE AGC");
+    return false;
+  }
+  set_agc_config(this->post_afe_agc_, this->agc_compression_gain_, 1, this->agc_target_level_);
+  this->reset_post_afe_agc_();
+  return true;
+}
+
+void EspAfe::release_post_afe_agc_() {
+  if (this->post_afe_agc_ != nullptr)
+    esp_agc_close(this->post_afe_agc_);
+  this->post_afe_agc_ = nullptr;
+  this->reset_post_afe_agc_();
+}
+
+void EspAfe::reset_post_afe_agc_() {
+  this->post_afe_agc_input_samples_ = 0;
+  memset(this->post_afe_agc_output_, 0, sizeof(this->post_afe_agc_output_));
+}
+
+bool EspAfe::process_post_afe_agc_frame_(const int16_t *input, int16_t *output, size_t samples) {
+  if (input == nullptr || output == nullptr)
+    return false;
+  if (this->post_afe_agc_ == nullptr) {
+    if (input != output)
+      memcpy(output, input, samples * sizeof(int16_t));
+    return true;
+  }
+  bool success = true;
+  for (size_t i = 0; i < samples; i++) {
+    // Read before writing: process() deliberately uses the same frame buffer.
+    const int16_t sample = input[i];
+    const size_t slot = this->post_afe_agc_input_samples_;
+    output[i] = this->post_afe_agc_output_[slot];
+    this->post_afe_agc_input_[slot] = sample;
+    if (++this->post_afe_agc_input_samples_ != kPostAfeAgcQuantumSamples)
+      continue;
+    const int ret = esp_agc_process(this->post_afe_agc_, this->post_afe_agc_input_,
+                                    this->post_afe_agc_output_, kPostAfeAgcQuantumSamples, 16000);
+    this->post_afe_agc_input_samples_ = 0;
+    if (ret != ESP_AGC_SUCCESS) {
+      // Preserve the same timeline on failure: bypass only this quantum,
+      // without discarding samples or inserting another silence prebuffer.
+      memcpy(this->post_afe_agc_output_, this->post_afe_agc_input_, sizeof(this->post_afe_agc_output_));
+      success = false;
+    }
+  }
+  return success;
+}
+#endif
+
 static inline int16_t afe_ref_sample(const int16_t *in_ref, int i) { return in_ref != nullptr ? in_ref[i] : 0; }
 
 static inline void stage_afe_input_frame(int16_t *dst, const int16_t *in_mic, const int16_t *in_ref, int samples,
@@ -321,7 +379,10 @@ bool EspAfe::build_instance_(AfeInstance *instance) {
   cfg->wakenet_model_name = nullptr;
   cfg->wakenet_model_name_2 = nullptr;
 
-  cfg->agc_init = this->agc_enabled_.load(std::memory_order_relaxed);
+  const bool use_post_afe_agc = afe_mic_channels >= 2 && this->agc_enabled_.load(std::memory_order_relaxed);
+  // ESP-SR 2.5.3 still omits AGC from its effective 2MIC graph. Do not claim
+  // an internal stage exists; dual-mic GMF output is processed explicitly.
+  cfg->agc_init = this->agc_enabled_.load(std::memory_order_relaxed) && !use_post_afe_agc;
   cfg->agc_mode = AFE_AGC_MODE_WEBRTC;
   cfg->agc_compression_gain_db = this->agc_compression_gain_;
   cfg->agc_target_level_dbfs = this->agc_target_level_;
@@ -606,6 +667,11 @@ bool EspAfe::install_instance_(AfeInstance *instance) {
     ESP_LOGE(TAG, "Failed to prepare AFE runtime buffers");
     return cleanup_failed_install();
   }
+#ifdef USE_ESP_AFE_POST_AGC
+  if (!this->prepare_post_afe_agc_()) {
+    return cleanup_failed_install();
+  }
+#endif
 
 #ifdef USE_ESP_AFE_GMF_PATH
   const size_t feed_bytes = static_cast<size_t>(this->feed_chunksize_) * this->total_channels_ * sizeof(int16_t);
@@ -1058,9 +1124,15 @@ bool EspAfe::set_vad_enabled_runtime_(bool enabled) {
     int ret = 0;
     const char *backend = "unknown";
 #ifdef USE_ESP_AFE_GMF_PATH
-        if (this->afe_manager_ != nullptr) {
-      ret = static_cast<int>(esp_gmf_afe_manager_enable_features(this->afe_manager_, ESP_AFE_FEATURE_VAD, enabled));
-      backend = "GMF AFE manager";
+    if (this->afe_manager_ != nullptr) {
+      // Fresh element open needs structural VAD until it creates wake_st_lock.
+      // Keep runtime toggles pending too, not just the YAML initial OFF state.
+      if (this->gmf_vad_state_pending_.load(std::memory_order_acquire)) {
+        backend = "GMF AFE pending open";
+      } else {
+        ret = static_cast<int>(esp_gmf_afe_manager_enable_features(this->afe_manager_, ESP_AFE_FEATURE_VAD, enabled));
+        backend = "GMF AFE manager";
+      }
     } else
 #endif
     {
@@ -1155,8 +1227,9 @@ void EspAfe::dump_config() {
                 this->vad_enabled_.load(std::memory_order_relaxed) ? "ON" : "OFF", this->vad_mode_,
                 this->vad_min_speech_ms_, this->vad_min_noise_ms_, this->vad_delay_ms_);
   ESP_LOGCONFIG(TAG, "  Continuous VAD Background Input: %s", this->continuous_vad_ ? "ON" : "OFF");
-  ESP_LOGCONFIG(TAG, "  AGC: %s (gain=%ddB, target=-%ddBFS)",
-                this->agc_enabled_.load(std::memory_order_relaxed) ? "ON" : "OFF", this->agc_compression_gain_,
+  const bool agc_enabled = this->agc_enabled_.load(std::memory_order_relaxed);
+  ESP_LOGCONFIG(TAG, "  AGC: %s%s (gain=%ddB, target=-%ddBFS)", agc_enabled ? "ON" : "OFF",
+                agc_enabled && this->mic_num_ >= 2 ? " (post-AFE WebRTC)" : "", this->agc_compression_gain_,
                 this->agc_target_level_);
   if (this->mic_num_ >= 2) {
     ESP_LOGCONFIG(TAG, "  Speech Enhancement: %s", this->is_se_enabled() ? "ON (structural dual-mic)" : "OFF");
@@ -1472,6 +1545,14 @@ bool EspAfe::process(const int16_t *in_mic, const int16_t *in_ref, int16_t *out,
       (!gmf_path || this->fetch_output_ring_->available() >= output_bytes)) {
     size_t got = this->fetch_output_ring_->read(reinterpret_cast<uint8_t *>(out), output_bytes, 0);
     if (got == output_bytes) {
+#ifdef USE_ESP_AFE_POST_AGC
+      // GMF output payloads are an arbitrary byte stream in v2026.9.x. Run
+      // post-AFE AGC here, only after a complete consumer frame is assembled.
+      if (this->post_afe_agc_ != nullptr &&
+          !this->process_post_afe_agc_frame_(out, out, static_cast<size_t>(os))) {
+        ESP_LOGW(TAG, "Post-AFE AGC failed; affected 10ms blocks bypassed");
+      }
+#endif
       processed = true;
       decrement_if_nonzero(this->fetch_queue_frames_);
       this->update_fetch_ring_free_pct_();
@@ -1601,7 +1682,15 @@ bool EspAfe::enable_ns() { return this->set_reinit_flag_(this->ns_enabled_, true
 bool EspAfe::disable_ns() { return this->set_reinit_flag_(this->ns_enabled_, false, "ns_enabled"); }
 bool EspAfe::enable_vad() { return this->set_vad_enabled_runtime_(true); }
 bool EspAfe::disable_vad() { return this->set_vad_enabled_runtime_(false); }
-bool EspAfe::enable_agc() { return this->set_reinit_flag_(this->agc_enabled_, true, "agc_enabled"); }
+bool EspAfe::enable_agc() {
+#ifndef USE_ESP_AFE_POST_AGC
+  if (this->mic_num_ >= 2) {
+    ESP_LOGW(TAG, "Dual-mic AGC not compiled; enable post_afe_agc_support in YAML");
+    return false;
+  }
+#endif
+  return this->set_reinit_flag_(this->agc_enabled_, true, "agc_enabled");
+}
 bool EspAfe::disable_agc() { return this->set_reinit_flag_(this->agc_enabled_, false, "agc_enabled"); }
 
 #ifdef USE_ESP_AFE_GMF_PATH
@@ -1699,6 +1788,9 @@ esp_gmf_err_io_t EspAfe::gmf_output_release_(esp_gmf_payload_t *load, int wait_t
   if (!this->processing_active_.load(std::memory_order_acquire)) {
     return ESP_GMF_IO_OK;
   }
+  // esp_gmf_afe_open() has completed before this callback can run, so its
+  // wake-state mutex now exists and the requested initial state is safe.
+  this->apply_pending_gmf_vad_state_();
   if (load == nullptr || load->buf == nullptr || load->valid_size == 0) {
     diag_add(this->fetch_timeout_);
     return ESP_GMF_IO_OK;
@@ -1751,10 +1843,40 @@ void EspAfe::update_fetch_ring_free_pct_() {
 }
 
 #ifdef USE_ESP_AFE_GMF_PATH
+bool EspAfe::apply_pending_gmf_vad_state_() {
+  if (!this->gmf_vad_state_pending_.load(std::memory_order_acquire))
+    return true;
+  // Never block media output behind a configuration command. The next output
+  // retries, and the existing configuration owner serializes runtime toggles.
+  esp_audio_stack::ScopedLock lock(this->config_mutex_, 0);
+  if (!lock)
+    return false;
+  if (!this->gmf_vad_state_pending_.exchange(false, std::memory_order_acq_rel)) {
+    return true;
+  }
+  if (this->afe_manager_ == nullptr || this->vad_enabled_.load(std::memory_order_relaxed)) {
+    return true;
+  }
+  const esp_gmf_err_t ret =
+      esp_gmf_afe_manager_enable_features(this->afe_manager_, ESP_AFE_FEATURE_VAD, false);
+  if (ret < 0) {
+    this->gmf_vad_state_pending_.store(true, std::memory_order_release);
+    ESP_LOGW(TAG, "Failed to apply initial GMF VAD=OFF state (ret=%d)", static_cast<int>(ret));
+    return false;
+  }
+  this->voice_present_.store(false, std::memory_order_relaxed);
+  ESP_LOGI(TAG, "Initial GMF VAD state applied: OFF");
+  return true;
+}
+
 void EspAfe::gmf_event_cb_(esp_gmf_element_handle_t el, esp_gmf_afe_evt_t *event, void *user_data) {
   (void) el;
   auto *self = static_cast<EspAfe *>(user_data);
   if (self == nullptr || event == nullptr) {
+    return;
+  }
+  if (!self->vad_enabled_.load(std::memory_order_relaxed)) {
+    self->voice_present_.store(false, std::memory_order_relaxed);
     return;
   }
 
@@ -1795,6 +1917,9 @@ bool EspAfe::start_pipeline_() {
   this->reset_output_prebuffer_();
   this->feed_queue_frames_.store(0, std::memory_order_relaxed);
   this->fetch_queue_frames_.store(0, std::memory_order_relaxed);
+#ifdef USE_ESP_AFE_POST_AGC
+  this->reset_post_afe_agc_();
+#endif
   if (this->afe_pipeline_paused_) {
     esp_gmf_err_t ret = esp_gmf_pipeline_resume(this->afe_pipeline_);
     if (ret != ESP_GMF_ERR_OK) {
@@ -1810,6 +1935,18 @@ bool EspAfe::start_pipeline_() {
     this->afe_pipeline_paused_ = false;
     this->afe_pipeline_running_ = true;
     return true;
+  }
+  // VAD must be present while esp_gmf_afe_open() creates its wake-state lock.
+  // Restore that structural state for a fresh run and defer a configured OFF
+  // state until the first output callback after open.
+  if (this->afe_manager_ != nullptr) {
+    const esp_gmf_err_t vad_ret =
+        esp_gmf_afe_manager_enable_features(this->afe_manager_, ESP_AFE_FEATURE_VAD, true);
+    if (vad_ret < 0) {
+      ESP_LOGW(TAG, "Unable to prepare structural GMF VAD before open (ret=%d)", static_cast<int>(vad_ret));
+      return false;
+    }
+    this->gmf_vad_state_pending_.store(true, std::memory_order_release);
   }
   esp_gmf_err_t ret = esp_gmf_pipeline_run(this->afe_pipeline_);
   if (ret != ESP_GMF_ERR_OK) {
@@ -1871,6 +2008,7 @@ bool EspAfe::pause_pipeline_() {
 
 void EspAfe::stop_pipeline_() {
 #ifdef USE_ESP_AFE_GMF_PATH
+  this->gmf_vad_state_pending_.store(false, std::memory_order_release);
   if (this->afe_pipeline_ != nullptr && (this->afe_pipeline_running_ || this->afe_pipeline_paused_)) {
     const bool was_paused = this->afe_pipeline_paused_;
     if (this->afe_pipeline_paused_ && this->afe_manager_ != nullptr) {
@@ -2134,6 +2272,9 @@ bool EspAfe::prepare_runtime_() {
 }
 
 void EspAfe::release_runtime_buffers_() {
+#ifdef USE_ESP_AFE_POST_AGC
+  this->release_post_afe_agc_();
+#endif
   this->fetch_output_ring_.reset();
   this->reset_output_prebuffer_();
 #ifdef USE_ESP_AFE_GMF_PATH

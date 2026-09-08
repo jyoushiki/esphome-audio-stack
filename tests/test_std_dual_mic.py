@@ -6,13 +6,21 @@ import subprocess
 
 import pytest
 from esphome import config_validation as cv
-from esphome.core import CORE, ID
+from esphome.core import ID
+import esphome.final_validate as fv
 
 ROOT = Path(__file__).resolve().parents[1]
 COMPONENT = ROOT / "esphome/components/esp_audio_stack"
 spec = importlib.util.spec_from_file_location("std_audio_schema", COMPONENT / "__init__.py")
 schema = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(schema)
+
+
+@pytest.fixture(autouse=True)
+def final_validation_context():
+    token = fv.full_config.set({})
+    yield
+    fv.full_config.reset(token)
 
 
 @pytest.mark.parametrize("slots", [["left", "right"], ["right", "left"]])
@@ -36,7 +44,7 @@ def test_std_slots_reject_conflicting_layouts(extra):
 
 def test_dual_requirement_applies_to_the_bound_processor(monkeypatch):
     monkeypatch.setattr(schema, "get_esp32_variant", lambda: "ESP32S3")
-    monkeypatch.setattr(CORE, "config", {"esp_afe": [
+    fv.full_config.set({"esp_afe": [
         {"id": ID("dual"), "mic_num": 2}, {"id": ID("mono"), "mic_num": 1},
     ]})
     for config in ({}, {"processor_id": ID("mono")}):

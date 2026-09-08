@@ -20,6 +20,7 @@ from esphome.components.esp32 import (
 )
 from esphome.components.esp32.const import VARIANT_ESP32P4, VARIANT_ESP32S3
 import esphome.config_validation as cv
+import esphome.final_validate as fv
 from esphome.const import (
     CONF_ADDRESS,
     CONF_BITS_PER_SAMPLE,
@@ -608,9 +609,7 @@ def _final_validate(config):
             "APLL clock source is only available on ESP32-P4 in the maintained target set."
         )
 
-    from esphome.core import CORE
-
-    full_config = CORE.config or {}
+    full_config = fv.full_config.get()
 
     # esp_aec and esp_afe are mutually exclusive: both provide AudioProcessor
     has_aec = "esp_aec" in full_config

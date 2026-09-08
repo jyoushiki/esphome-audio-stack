@@ -3,8 +3,8 @@
 import esphome.codegen as cg
 from esphome.components import sensor
 import esphome.config_validation as cv
+import esphome.final_validate as fv
 from esphome.const import ENTITY_CATEGORY_DIAGNOSTIC
-from esphome.core import CORE
 
 from . import CONF_ESP_AUDIO_STACK_ID, ESPAudioStack, esp_audio_stack_ns
 
@@ -48,7 +48,7 @@ CONFIG_SCHEMA = cv.Schema(
 
 
 def _validate_slot_bus(config):
-    stacks = CORE.config.get("esp_audio_stack", [])
+    stacks = fv.full_config.get().get("esp_audio_stack", [])
     if isinstance(stacks, dict):
         stacks = [stacks]
     parent = next(p for p in stacks if p["id"] == config[CONF_ESP_AUDIO_STACK_ID])
