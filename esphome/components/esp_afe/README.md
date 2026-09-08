@@ -6,12 +6,17 @@
 > arbitrary standalone filter.
 
 ESPHome component wrapping Espressif's **ESP-SR AFE** (Audio Front End)
-through two target-specific paths: single-mic profiles call the ESP-SR AFE
-feed/fetch interface directly, while dual-mic profiles use the official
-`esp_gmf_afe` element and GMF manager/pipeline tasks. The component provides
+through the official `esp_gmf_afe` element and GMF manager/pipeline tasks
+for both single-mic and dual-mic profiles. The component provides
 AEC, Speech Enhancement on dual-mic targets, optional NS/VAD/AGC stages,
 runtime controls and diagnostic sensors.
 Supports single-mic (MR) and dual-mic (MMR/MMNR) configurations.
+
+DSP feed work runs outside the hardware audio task. The input staging adapts
+ESP-SR feed blocks to the frame cadence established at setup, and the existing
+output byte stream preserves partial results. This keeps live I2S/DMA sizing
+stable when changing AEC, NS or AGC. Rebuilding an AFE feature briefly pauses
+microphone processing while the graph restarts; it does not end the call.
 
 ## Overview
 
@@ -153,7 +158,7 @@ esp_afe:
 | `afe_linear_gain` | float | `1.0` | Linear gain multiplier applied to output (0.1-10.0) |
 | `task_core` | int | `1` | Core preference for the esp-sr SE/BSS worker task created by the AFE instance. |
 | `task_priority` | int | `5` | Priority for the esp-sr SE/BSS worker task. |
-| `ringbuf_size` | int | `8` | Requested ESP-SR internal ring size in frames (2-32). The direct single-mic path normalizes values below 16 to 16 for stable feed/fetch cadence. Larger values trade memory and latency for tolerance. |
+| `ringbuf_size` | int | `8` | Requested ESP-SR internal ring size in frames (2-32). The single-mic configuration normalizes values below 16 to 16 for stable feed/fetch cadence. Larger values trade memory and latency for tolerance. |
 | `feed_task_core` | int | `0` | Dual-mic GMF manager feed-task core. |
 | `feed_task_priority` | int | `5` | Dual-mic GMF manager feed-task priority. |
 | `feed_task_stack_size` | int | `3072` | Dual-mic GMF manager feed-task stack size in bytes. |
@@ -552,7 +557,7 @@ matching GMF frame shape can omit the feed scratch entirely.
 
 Budget the final composite firmware from runtime free, minimum-free and largest
 internal blocks plus PSRAM usage. Fixed totals copied from another board are
-especially misleading across single-mic direct and dual-mic GMF graphs.
+especially misleading across single-mic and dual-mic AFE graphs.
 
 ### ESP32-S3 IRAM/DRAM Profile
 
@@ -612,7 +617,7 @@ responses are:
    [ESP32-S3 IRAM/DRAM Profile](#esp32-s3-iramdram-profile)).
 2. Set `memory_alloc_mode: more_psram`
 3. Use a single-mic config or `esp_aec` if Speech Enhancement is not needed
-4. Reduce `ringbuf_size` carefully; the single-mic direct path uses an effective
+4. Reduce `ringbuf_size` carefully; the single-mic configuration uses an effective
    minimum of 16 even when a smaller YAML value is requested
 5. Consider using `esp_aec` instead if you don't need NS/AGC/VAD/SE
 

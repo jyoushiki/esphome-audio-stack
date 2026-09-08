@@ -86,7 +86,7 @@ using esp_audio_stack::ProcessorTelemetry;
 ///
 /// Runtime reconfiguration that changes the AFE graph (NS/AGC or switching
 /// SR/VC/FD mode) must tear the esp-sr instance down and rebuild it. AEC is
-/// rebuild-only on the ESP-SR single-mic direct path and live-toggled only
+/// rebuild-only on the ESP-SR single-mic pipeline and live-toggled only
 /// through the GMF manager; VAD and SE/BSS are structural on current builds.
 /// Because
 /// process() is called from the consumer audio task (prio 19) while
@@ -221,10 +221,6 @@ class EspAfe final : public Component, public AudioProcessor {
   int afe_mic_channels_() const;
 
   struct AfeInstance {
-#ifdef USE_ESP_AFE_DIRECT_PATH
-    const esp_afe_sr_iface_t *direct_iface{nullptr};
-    esp_afe_sr_data_t *direct_data{nullptr};
-#endif
 #ifdef USE_ESP_AFE_GMF_PATH
     esp_gmf_afe_manager_handle_t manager{nullptr};
     esp_gmf_obj_handle_t element{nullptr};
@@ -251,11 +247,6 @@ class EspAfe final : public Component, public AudioProcessor {
   bool set_reinit_flag_(std::atomic<bool> &flag, bool enabled, const char *name);
   bool prepare_runtime_();
   bool prepare_fetch_output_ring_();
-#ifdef ESP_AFE_RING_INTEGRITY_DEBUG
-  bool debug_validate_direct_runtime_(const char *stage);
-  void debug_arm_direct_runtime_();
-  void debug_disarm_direct_runtime_();
-#endif
 #ifdef USE_ESP_AFE_GMF_PATH
   bool prepare_feed_input_ring_();
 #endif
@@ -277,10 +268,6 @@ class EspAfe final : public Component, public AudioProcessor {
 
   // GMF AFE manager and config. The config must outlive the manager because
   // esp-sr stores pointers into it.
-#ifdef USE_ESP_AFE_DIRECT_PATH
-  const esp_afe_sr_iface_t *direct_iface_{nullptr};
-  esp_afe_sr_data_t *direct_data_{nullptr};
-#endif
 #ifdef USE_ESP_AFE_GMF_PATH
   esp_gmf_afe_manager_handle_t afe_manager_{nullptr};
   esp_gmf_obj_handle_t afe_element_{nullptr};
@@ -290,10 +277,6 @@ class EspAfe final : public Component, public AudioProcessor {
   afe_config_t *afe_config_{nullptr};
   bool afe_pipeline_running_{false};
   bool afe_pipeline_paused_{false};
-#ifdef USE_ESP_AFE_DIRECT_PATH
-  std::atomic<bool> direct_fetch_running_{false};
-  std::atomic<bool> direct_fetch_quiesced_{true};
-#endif
 
   // Feed buffer: interleaved [mic, ref, ...], [mic1, mic2, ref, ...] or
   // [mic1, mic2, N, ref, ...] depending on esp-sr input_format.
@@ -321,20 +304,6 @@ class EspAfe final : public Component, public AudioProcessor {
   uint8_t *feed_input_ring_storage_{nullptr};
   StaticRingbuffer_t *feed_input_ring_struct_{nullptr};
 #endif
-#ifdef USE_ESP_AFE_DIRECT_PATH
-  SemaphoreHandle_t direct_feed_signal_{nullptr};
-  StaticSemaphore_t direct_feed_signal_storage_{};
-  std::atomic<TaskHandle_t> direct_fetch_stop_waiter_{nullptr};
-  static constexpr int kDirectFeedSignalMaxCount = 8;
-  TaskHandle_t direct_fetch_task_handle_{nullptr};
-  StaticTask_t direct_fetch_task_tcb_{};
-  StackType_t *direct_fetch_task_stack_{nullptr};
-  // ESP-IDF's pinned-task APIs take the stack depth in bytes, while the
-  // caller-provided static buffer is an array of StackType_t elements.
-  static constexpr uint32_t kDirectFetchTaskStackBytes = 4096;
-  static constexpr size_t kDirectFetchTaskStackWords =
-      (kDirectFetchTaskStackBytes + sizeof(StackType_t) - 1) / sizeof(StackType_t);
-#endif
 
 #ifdef USE_ESP_AFE_GMF_PATH
   static esp_gmf_err_io_t gmf_input_acquire_cb_(void *ctx, esp_gmf_payload_t *load, uint32_t wanted_size,
@@ -345,15 +314,6 @@ class EspAfe final : public Component, public AudioProcessor {
   static esp_gmf_err_io_t gmf_output_release_cb_(void *ctx, esp_gmf_payload_t *load, int wait_ticks);
   esp_gmf_err_io_t gmf_input_acquire_(esp_gmf_payload_t *load, uint32_t wanted_size, int wait_ticks);
   esp_gmf_err_io_t gmf_output_release_(esp_gmf_payload_t *load, int wait_ticks);
-#endif
-  void handle_manager_result_(afe_fetch_result_t *result);
-#ifdef USE_ESP_AFE_DIRECT_PATH
-  static void direct_fetch_task_trampoline_(void *arg);
-  void direct_fetch_task_loop_();
-  bool prepare_direct_fetch_task_();
-  bool start_direct_fetch_task_();
-  bool stop_direct_fetch_task_();
-  void destroy_direct_fetch_task_();
 #endif
 #ifdef USE_ESP_AFE_GMF_PATH
   static void gmf_event_cb_(esp_gmf_element_handle_t el, esp_gmf_afe_evt_t *event, void *user_data);
@@ -371,15 +331,6 @@ class EspAfe final : public Component, public AudioProcessor {
 
   // Fetch bridge: GMF output port writes, process() reads non-blocking.
   esp_audio_stack::RingBufferPtr fetch_output_ring_;
-
-#ifdef ESP_AFE_RING_INTEGRITY_DEBUG
-  static constexpr size_t kDirectFeedGuardBytes = 32;
-  static constexpr uint8_t kDirectFeedGuardPattern = 0xA5;
-  esp_audio_stack::CapsRingBuffer *debug_expected_fetch_ring_{nullptr};
-  int16_t *debug_expected_feed_buf_{nullptr};
-  size_t debug_expected_feed_bytes_{0};
-  std::atomic<bool> debug_integrity_fault_{false};
-#endif
 
   // Config (set from Python, used in setup())
   int afe_type_{0};  // AFE_TYPE_SR

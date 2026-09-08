@@ -24,7 +24,7 @@ void diag_add(std::atomic<uint32_t>& c){++c;}
 void decrement_if_nonzero(std::atomic<uint32_t>& c){if(c)c--;}
 void update_peak_atomic(std::atomic<uint32_t>& c,uint32_t n){c=std::max(c.load(),n);}
 struct EspAfe {
- void *feed_input_ring_=input;std::atomic<bool> processing_active_{false};int feed_chunksize_=1024;
+ void *feed_input_ring_=input;std::atomic<bool> processing_active_{false},drain_request_{false};int feed_chunksize_=1024;
  std::atomic<uint32_t> feed_rejected_{0},feed_queue_frames_{0},feed_us_last_{0},feed_us_max_{0},feed_ok_{0};
  esp_gmf_err_io_t gmf_input_acquire_(esp_gmf_payload_t*,uint32_t,int);
 };
@@ -42,6 +42,16 @@ int main(){
  assert(load.valid_size==8 && std::memcmp(output,input,8)==0 && returned==2);
  provide_item=false;
  assert(afe.gmf_input_acquire_(&load,8,20)==ESP_GMF_IO_TIMEOUT);
+ // A reconfigure retains active consumers but must release its input waiter.
+ afe.drain_request_=true;
+ assert(afe.gmf_input_acquire_(&load,8,-1)==ESP_GMF_IO_ABORT);
+ assert(observed_wait==64 && load.valid_size==0);
+ provide_item=true;
+ assert(afe.gmf_input_acquire_(&load,8,-1)==ESP_GMF_IO_ABORT);
+ assert(observed_wait==64 && returned==3 && afe.feed_ok_==1);
+ afe.drain_request_=false;
+ assert(afe.gmf_input_acquire_(&load,8,20)==ESP_GMF_IO_OK);
+ assert(returned==4 && afe.feed_ok_==2);
 }
 '''
  cpp=tmp_path/'input.cpp';cpp.write_text(harness+s[a:b]+checks);exe=tmp_path/'input';subprocess.run(['g++','-std=c++17','-O2',str(cpp),'-o',str(exe)],check=True);subprocess.run([str(exe)],check=True)

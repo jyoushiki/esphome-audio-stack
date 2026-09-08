@@ -417,9 +417,10 @@ The mode can be switched at runtime with `esp_aec.set_mode`.
 
 ### 8.2 `esp_afe`: Full Audio Front End
 
-`esp_afe` wraps Espressif AFE: the single-mic path calls ESP-SR directly, while
-the dual-mic path uses the GMF AFE element. Both expose AEC, noise suppression,
-VAD, AGC and, where supported, dual-mic Speech Enhancement/BSS.
+`esp_afe` wraps Espressif AFE through the same GMF feed/fetch pipeline for
+single-mic and dual-mic devices. It exposes AEC, noise suppression, VAD, AGC
+and, where supported, dual-mic Speech Enhancement/BSS. DSP processing runs
+outside the hardware audio task, and feature changes preserve its frame cadence.
 
 ```yaml
 esp_afe:
