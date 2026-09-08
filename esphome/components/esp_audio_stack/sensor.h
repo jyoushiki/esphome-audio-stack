@@ -1,6 +1,6 @@
 #pragma once
 
-#if defined(USE_ESP32) && defined(USE_SENSOR)
+#if defined(USE_ESP32) && defined(USE_SENSOR) && defined(USE_ESP_AUDIO_STACK_SLOT_LEVELS)
 
 #include "esphome/components/sensor/sensor.h"
 #include "esphome/core/component.h"
@@ -20,7 +20,7 @@ class TdmSlotLevelSensor final : public sensor::Sensor, public PollingComponent,
   }
 
   void dump_config() override {
-    log_config("audio_stack.tdm_slot_sensor", "ESP Audio Stack TDM Slot %u Level Sensor", this->slot_);
+    log_config("audio_stack.tdm_slot_sensor", "ESP Audio Stack RX Slot %u Level Sensor", this->slot_);
   }
 
  protected:

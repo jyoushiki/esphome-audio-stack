@@ -310,3 +310,12 @@ See Also
 - :doc:`/components/micro_wake_word`
 - :apiref:`esp_audio_stack/esp_audio_stack.h`
 - :ghedit:`Edit`
+
+Optional input level sensors
+----------------------------
+
+``sensor: platform: esp_audio_stack`` supports ``std_slot_levels`` with
+``slot: left`` or ``slot: right`` on standard stereo RX, and the existing
+``tdm_slot_levels`` with numeric slots on TDM. Both report raw-input RMS dBFS
+while capture is active. Neither creates another microphone stream. Observer
+code and storage are omitted when no slot sensors are configured.

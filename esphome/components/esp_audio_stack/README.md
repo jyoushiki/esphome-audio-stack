@@ -1082,3 +1082,27 @@ priority; a core move can simply transfer the contention.
 The ESPHome wrapper code is MIT-licensed. Espressif libraries fetched for
 codec, conversion and optional processing retain their own licenses and
 product-use restrictions; see the repository `THIRD_PARTY_NOTICES.md`.
+
+### Independent standard-I2S microphone levels
+
+With `rx_slot_mode: stereo`, optional `std_slot_levels` sensors measure the
+physical left/right inputs before AFE combines them into mono. They work without
+`rx_mic_slots` or a dual-mic processor and can drive sound-direction automations.
+They observe an already active capture; they do not start a second I2S reader.
+
+```yaml
+sensor:
+  - platform: esp_audio_stack
+    esp_audio_stack_id: audio_stack
+    std_slot_levels:
+      - slot: left
+        name: Left microphone level
+      - slot: right
+        name: Right microphone level
+```
+
+Levels are RMS dBFS, so a less negative value is louder. The public microphone
+remains mono. `tdm_slot_levels` retains its existing syntax for TDM boards; both
+options use the same observer. With neither option configured, the observer and
+its storage are excluded from the firmware. STD dual-mic capture code and fields
+are likewise excluded when no stack configures `rx_mic_slots`.

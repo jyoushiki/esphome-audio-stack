@@ -327,6 +327,7 @@ class ESPAudioStack final : public Component {
   void set_secondary_tdm_mic_slot(int8_t slot) { this->tdm_second_mic_slot_ = slot; }
   void set_tdm_ref_slot(uint8_t slot) { this->tdm_ref_slot_ = slot; }
   void set_tdm_tx_slot(uint8_t slot) { this->tdm_tx_slot_ = slot; }
+#ifdef USE_ESP_AUDIO_STACK_SLOT_LEVELS
   void set_tdm_slot_level_sensor_enabled(uint8_t slot, bool enabled) {
     if (slot >= 8)
       return;
@@ -342,6 +343,7 @@ class ESPAudioStack final : public Component {
       return -120.0f;
     return this->tdm_slot_level_dbfs_[slot].load(std::memory_order_relaxed);
   }
+#endif
 
   // Microphone interface
   bool add_mic_data_callback(MicDataCallback callback, void *ctx) {
@@ -553,7 +555,9 @@ class ESPAudioStack final : public Component {
     bool need_tx_audio{false};
     bool need_tx_clock{false};
     bool clock_only_tx{false};
+#ifdef USE_ESP_AUDIO_STACK_SLOT_LEVELS
     bool any_tdm_slot_level_sensor_enabled{false};
+#endif
 
     // ── Per-iteration snapshots from atomics ──
     int8_t mic_gain_boost_db{0};
@@ -603,7 +607,7 @@ class ESPAudioStack final : public Component {
   void apply_post_processor_gain_(AudioTaskCtx &ctx);
   void dispatch_mic_callbacks_(const AudioTaskCtx &ctx);
   bool apply_mic_alc_gain_(int16_t *samples, size_t sample_count, int8_t gain_db);
-#ifdef USE_ESP_AUDIO_STACK_TDM_BUS
+#ifdef USE_ESP_AUDIO_STACK_SLOT_LEVELS
   void update_tdm_slot_levels_(const AudioTaskCtx &ctx);
 #endif
   bool format_tx_frame_(AudioTaskCtx &ctx, void **tx_data, size_t *tx_bytes);
@@ -832,10 +836,12 @@ class ESPAudioStack final : public Component {
   int8_t tdm_second_mic_slot_{-1};  // Optional second mic slot for dual-mic AFE
   uint8_t tdm_ref_slot_{1};         // TDM slot index for AEC reference
   uint8_t tdm_tx_slot_{0};          // TDM slot index for speaker TX
+#ifdef USE_ESP_AUDIO_STACK_SLOT_LEVELS
   bool tdm_slot_level_sensor_enabled_[8] = {false};
   std::atomic<bool> any_tdm_slot_level_sensor_enabled_{false};
   std::atomic<float> tdm_slot_level_dbfs_[8] = {};
   uint8_t tdm_slot_level_divider_{0};
+#endif
 
   // Task configuration (defaults match ESP-IDF audio best practices)
   uint8_t task_priority_{19};  // Above lwIP(18), below WiFi(23)

@@ -945,8 +945,12 @@ void ESPAudioStack::audio_session_() {
 }
 
 void ESPAudioStack::update_runtime_audio_flags_(AudioTaskCtx &ctx) {
+  bool observe_slots = false;
+#ifdef USE_ESP_AUDIO_STACK_SLOT_LEVELS
   ctx.any_tdm_slot_level_sensor_enabled = this->any_tdm_slot_level_sensor_enabled_.load(std::memory_order_relaxed);
-  ctx.need_rx_processing = this->rx_handle_ != nullptr && (ctx.mic_running || ctx.any_tdm_slot_level_sensor_enabled);
+  observe_slots = ctx.any_tdm_slot_level_sensor_enabled;
+#endif
+  ctx.need_rx_processing = this->rx_handle_ != nullptr && (ctx.mic_running || observe_slots);
   // If RX is enabled but nobody needs the decoded mic surface, still drain the
   // driver/codec queue so DMA does not build backpressure while speaker-only
   // playback is active.
@@ -1022,8 +1026,8 @@ void ESPAudioStack::process_rx_path_(AudioTaskCtx &ctx) {
   if (!this->read_rx_frame_(ctx, "audio"))
     return;
 
-#ifdef USE_ESP_AUDIO_STACK_TDM_BUS
-  if (ctx.use_tdm_bus && ctx.any_tdm_slot_level_sensor_enabled) {
+#ifdef USE_ESP_AUDIO_STACK_SLOT_LEVELS
+  if ((ctx.use_tdm_bus || ctx.rx_slot_mode_stereo) && ctx.any_tdm_slot_level_sensor_enabled) {
     this->update_tdm_slot_levels_(ctx);
   }
 #endif
@@ -1269,11 +1273,11 @@ void ESPAudioStack::apply_input_conditioning_(AudioTaskCtx &ctx) {
   // the rate converter.
 }
 
-#ifdef USE_ESP_AUDIO_STACK_TDM_BUS
+#ifdef USE_ESP_AUDIO_STACK_SLOT_LEVELS
 void ESPAudioStack::update_tdm_slot_levels_(const AudioTaskCtx &ctx) {
   uint8_t enabled_slots[8];
   size_t enabled_count = 0;
-  const uint8_t slot_limit = std::min<uint8_t>(ctx.tdm_total_slots, 8);
+  const uint8_t slot_limit = ctx.use_tdm_bus ? std::min<uint8_t>(ctx.tdm_total_slots, 8) : 2;
   for (uint8_t slot = 0; slot < slot_limit; slot++) {
     if (this->tdm_slot_level_sensor_enabled_[slot]) {
       enabled_slots[enabled_count++] = slot;
@@ -1292,7 +1296,7 @@ void ESPAudioStack::update_tdm_slot_levels_(const AudioTaskCtx &ctx) {
   this->tdm_slot_level_divider_ = 0;
 
   const size_t frame_samples = ctx.bus_frame_size;
-  const size_t slot_stride = ctx.tdm_total_slots;
+  const size_t slot_stride = slot_limit;
   for (size_t i = 0; i < enabled_count; i++) {
     uint8_t slot = enabled_slots[i];
     float dbfs;
