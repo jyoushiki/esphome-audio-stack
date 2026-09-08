@@ -1189,9 +1189,35 @@ void ESPAudioStack::deinit_i2s_() {
   ESP_LOGI(TAG, "I2S deinitialized");
 }
 
+// With CONFIG_I2S_ISR_IRAM_SAFE, this callback also runs during flash writes.
+// Avoid std::atomic C++ wrappers: at -Os GCC can put them in flash even when
+// their caller is in IRAM. Keep the scalar storage layout explicit below.
+// S3 with PSRAM uses IDF's atomic workaround, whose runtime helpers are placed
+// in IRAM by LIBC_MISC_IN_IRAM. Preserve that dispatch instead of forcing the
+// hardware atomic instructions that the workaround deliberately disables.
+// Verify the linked call tree when changing compiler, target or IDF options.
+static_assert(sizeof(std::atomic<bool>) == sizeof(bool),
+              "ISR helpers require scalar bool atomic storage");
+static_assert(sizeof(std::atomic<uint32_t>) == sizeof(uint32_t),
+              "ISR helpers require scalar uint32_t atomic storage");
+#if !(defined(CONFIG_STDATOMIC_S32C1I_SPIRAM_WORKAROUND) && CONFIG_STDATOMIC_S32C1I_SPIRAM_WORKAROUND && \
+      defined(CONFIG_LIBC_MISC_IN_IRAM) && CONFIG_LIBC_MISC_IN_IRAM)
+static_assert(std::atomic<bool>::is_always_lock_free && std::atomic<uint32_t>::is_always_lock_free,
+              "ISR atomics require native operations or IDF's IRAM-safe fallback");
+#endif
+static inline bool IRAM_ATTR isr_load_flag(const std::atomic<bool> &flag) {
+  return __atomic_load_n(reinterpret_cast<const bool *>(&flag), __ATOMIC_ACQUIRE);
+}
+static inline uint32_t IRAM_ATTR isr_load_u32(const std::atomic<uint32_t> &value) {
+  return __atomic_load_n(reinterpret_cast<const uint32_t *>(&value), __ATOMIC_RELAXED);
+}
+static inline void IRAM_ATTR isr_increment_u32(std::atomic<uint32_t> &value) {
+  __atomic_fetch_add(reinterpret_cast<uint32_t *>(&value), 1U, __ATOMIC_RELAXED);
+}
+
 bool IRAM_ATTR ESPAudioStack::tx_on_sent_callback(i2s_chan_handle_t handle, i2s_event_data_t *event, void *user_ctx) {
   auto *self = static_cast<ESPAudioStack *>(user_ctx);
-  if (self == nullptr || !self->tx_completion_tracking_active_.load(std::memory_order_acquire) ||
+  if (self == nullptr || !isr_load_flag(self->tx_completion_tracking_active_) ||
       self->tx_completion_event_queue_ == nullptr) {
     return false;
   }
@@ -1214,10 +1240,10 @@ bool IRAM_ATTR ESPAudioStack::tx_on_sent_callback(i2s_chan_handle_t handle, i2s_
     // Once real speaker data is pending, losing a timestamp may lose its
     // completion boundary. Preserve the fail-closed behaviour in that case so
     // output callbacks (notably AEC reference tracking) cannot silently drift.
-    if (self->tx_completion_pending_real_records_.load(std::memory_order_relaxed) > 0) {
+    if (isr_load_u32(self->tx_completion_pending_real_records_) > 0) {
       self->tx_completion_desync_ = true;
     } else {
-      self->tx_completion_idle_event_drops_.fetch_add(1, std::memory_order_relaxed);
+      isr_increment_u32(self->tx_completion_idle_event_drops_);
     }
   }
   xQueueSendToBackFromISR(self->tx_completion_event_queue_, &now, &need_yield2);
