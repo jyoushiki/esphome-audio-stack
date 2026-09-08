@@ -1,16 +1,24 @@
 """Exercise the real staging loop across unequal public and DSP frame sizes."""
+
 from pathlib import Path
 import subprocess
+
 ROOT = Path(__file__).resolve().parents[1]
 
 
 def test_feed_chunks_preserve_samples_and_allocation_bounds(tmp_path):
-    source = (ROOT / 'esphome/components/esp_afe/esp_afe.cpp').read_text()
-    helper = source[source.index('static inline int16_t afe_ref_sample'):source.index('\naec_mode_t EspAfe::derive_aec_mode_')]
-    start = source.index('  const int tc = this->total_channels_;', source.index('bool EspAfe::process('))
-    stop = source.index('\n  // Step 2:', start)
+    source = (ROOT / "esphome/components/esp_afe/esp_afe.cpp").read_text()
+    helper = source[
+        source.index("static inline int16_t afe_ref_sample") : source.index(
+            "\naec_mode_t EspAfe::derive_aec_mode_"
+        )
+    ]
+    start = source.index(
+        "  const int tc = this->total_channels_;", source.index("bool EspAfe::process(")
+    )
+    stop = source.index("\n  // Step 2:", start)
     body = source[start:stop]
-    harness = r'''
+    harness = r"""
 #include <algorithm>
 #include <atomic>
 #include <cassert>
@@ -28,8 +36,8 @@ int xRingbufferSend(void* h,const void* p,size_t bytes,int){
  assert(bytes==feed_values*2);auto& out=*static_cast<V*>(h);auto* in=static_cast<const int16_t*>(p);
  out.insert(out.end(),in,in+bytes/2);return 1;
 }
-'''
-    cls = r'''
+"""
+    cls = r"""
 struct EspAfe {
  V observed,slot;int feed_chunksize_,total_channels_,staged_input_samples_=0,warmup_remaining_=0;
  int16_t* feed_buf_;void* feed_input_ring_;
@@ -39,8 +47,8 @@ struct EspAfe {
  void process(int qs,const int16_t* in_mic,const int16_t* in_ref,int transport_mic_channels,int afe_mic_channels){
  const int fs=feed_chunksize_;int offset=staged_input_samples_;
  const bool gmf_path=true;
-'''
-    checks = r'''
+"""
+    checks = r"""
  }
 };
 int main(){
@@ -62,8 +70,9 @@ int main(){
   assert(afe.input_ring_drop_==0 && afe.feed_rejected_==0);
  }
 }
-'''
-    cpp = tmp_path / 'chunks.cpp';cpp.write_text(harness+helper+cls+body+checks)
-    exe = tmp_path / 'chunks'
-    subprocess.run(['g++','-std=c++17','-O2',str(cpp),'-o',str(exe)],check=True)
-    subprocess.run([str(exe)],check=True)
+"""
+    cpp = tmp_path / "chunks.cpp"
+    cpp.write_text(harness + helper + cls + body + checks)
+    exe = tmp_path / "chunks"
+    subprocess.run(["g++", "-std=c++17", "-O2", str(cpp), "-o", str(exe)], check=True)
+    subprocess.run([str(exe)], check=True)

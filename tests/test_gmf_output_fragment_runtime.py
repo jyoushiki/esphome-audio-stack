@@ -1,14 +1,16 @@
 """Execute the production GMF output callback against a bounded host FIFO."""
+
 from pathlib import Path
 import subprocess
 
 ROOT = Path(__file__).resolve().parents[1]
 
+
 def test_gmf_partial_payloads_preserve_every_sample(tmp_path):
-    source = (ROOT / 'esphome/components/esp_afe/esp_afe.cpp').read_text()
-    start = source.index('esp_gmf_err_io_t EspAfe::gmf_output_release_(')
-    callback = source[start:source.index('\n#endif', start)]
-    harness = r'''
+    source = (ROOT / "esphome/components/esp_afe/esp_afe.cpp").read_text()
+    start = source.index("esp_gmf_err_io_t EspAfe::gmf_output_release_(")
+    callback = source[start : source.index("\n#endif", start)]
+    harness = r"""
 #include <atomic>
 #include <algorithm>
 #include <cassert>
@@ -42,8 +44,8 @@ struct EspAfe {
  void update_fetch_ring_free_pct_() {}
  esp_gmf_err_io_t gmf_output_release_(esp_gmf_payload_t *,int);
 };
-'''
-    checks = r'''
+"""
+    checks = r"""
 int main() {
  EspAfe afe;
  std::vector<uint8_t> samples(8192);
@@ -64,8 +66,9 @@ int main() {
  afe.gmf_output_release_(&overflow,0);
  assert(afe.output_ring_drop_==1);
 }
-'''
-    cpp=tmp_path/'callback.cpp';cpp.write_text(harness+callback+checks)
-    exe=tmp_path/'callback'
-    subprocess.run(['g++','-std=c++17','-O2',str(cpp),'-o',str(exe)],check=True)
-    subprocess.run([str(exe)],check=True)
+"""
+    cpp = tmp_path / "callback.cpp"
+    cpp.write_text(harness + callback + checks)
+    exe = tmp_path / "callback"
+    subprocess.run(["g++", "-std=c++17", "-O2", str(cpp), "-o", str(exe)], check=True)
+    subprocess.run([str(exe)], check=True)
