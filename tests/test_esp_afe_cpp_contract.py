@@ -26,7 +26,7 @@ def test_single_mic_aec_toggle_rebuilds_instead_of_live_disabling() -> None:
     assert "single-mic AFE rebuild" in cpp
     assert "cfg->aec_init = afe_mic_channels >= 2 || this->aec_enabled_.load" in cpp
     assert "return this->mic_num_ <= 1 ? FeatureControl::RESTART_REQUIRED : FeatureControl::LIVE_TOGGLE;" in cpp
-    assert "rebuild-only on the ESP-SR single-mic direct path" in header
+    assert "rebuild-only on the ESP-SR single-mic pipeline" in header
 
     install_start = cpp.index("bool EspAfe::install_instance_(")
     install_end = cpp.index("\nEspAfe::AfeInstance EspAfe::detach_instance_", install_start)
@@ -51,7 +51,7 @@ def test_gmf_dual_mic_feed_uses_direct_ring_slots() -> None:
     assert "Failed to allocate staged feed buffer" in gmf_build
 
     process = cpp[cpp.index("bool EspAfe::process(") :]
-    assert "const bool gmf_direct_frame = gmf_path && !direct_path && offset == 0 && qs == fs;" in process
+    assert "const bool gmf_direct_frame = gmf_path && offset == 0 && stage_samples == fs;" in process
     assert "stage_afe_input_frame(static_cast<int16_t *>(gmf_slot)" in process
 
 
@@ -73,21 +73,20 @@ def test_gmf_output_bridge_preserves_frame_boundaries_and_optional_reserve() -> 
     assert "set_output_prebuffer_frames" in header
 
     process = cpp[cpp.index("bool EspAfe::process(") : cpp.index("\nbool EspAfe::reinit_by_name")]
-    assert "this->fetch_output_ring_->nosplit_items_waiting() >= required_frames" in process
+    assert "this->fetch_output_ring_->available() / output_bytes" in process
+    assert "this->fetch_output_ring_->available() >= output_bytes" in process
     assert "static_cast<size_t>(this->output_prebuffer_frames_) + 1U" in process
     assert "this->fetch_output_ring_->read(reinterpret_cast<uint8_t *>(out), output_bytes, 0)" in process
 
     output_start = cpp.index("esp_gmf_err_io_t EspAfe::gmf_output_release_(")
     output = cpp[output_start : cpp.index("\n#endif", output_start)]
-    assert "complete_frames = load->valid_size / frame_bytes" in output
-    assert "for (size_t frame = 0; frame < complete_frames; frame++)" in output
-    assert "write_without_replacement(frame_data, frame_bytes, 0, false)" in output
-    assert "write_without_replacement(load->buf, want" not in output
+    assert "write_without_replacement(load->buf, load->valid_size, 0, false)" in output
+    assert "output size is not frame-aligned" not in output
     assert "size_t nosplit_items_waiting() const;" in ring
     assert "vRingbufferGetInfo(this->handle_" in ring
 
 
-def test_dual_mic_agc_uses_explicit_post_afe_webrtc_stage() -> None:
+def test_dual_mic_agc_runs_after_complete_gmf_frame_assembly() -> None:
     cpp = read("esp_afe.cpp")
     header = read("esp_afe.h")
 
@@ -99,14 +98,18 @@ def test_dual_mic_agc_uses_explicit_post_afe_webrtc_stage() -> None:
 
     config = cpp[cpp.index("const bool use_post_afe_agc") : cpp.index("cfg->afe_perferred_core")]
     assert "afe_mic_channels >= 2" in config
-    assert "cfg->agc_init = this->agc_enabled_.load" in config
     assert "&& !use_post_afe_agc" in config
+
+    process = cpp[cpp.index("bool EspAfe::process(") : cpp.index("\nbool EspAfe::reinit_by_name")]
+    read_pos = process.index("fetch_output_ring_->read")
+    complete = process.index("if (got == output_bytes)", read_pos)
+    agc = process.index("process_post_afe_agc_frame_", complete)
+    assert read_pos < complete < agc
 
     output_start = cpp.index("esp_gmf_err_io_t EspAfe::gmf_output_release_(")
     output = cpp[output_start : cpp.index("\n#endif", output_start)]
-    assert "process_post_afe_agc_frame_" in output
-    assert "frame_data = this->post_afe_agc_frame_" in output
-    assert "write_without_replacement(frame_data" in output
+    assert "process_post_afe_agc_frame_" not in output
+    assert "write_without_replacement(load->buf, load->valid_size" in output
 
 
 def test_gmf_initial_vad_off_is_applied_only_after_element_open() -> None:
@@ -131,23 +134,21 @@ def test_gmf_initial_vad_off_is_applied_only_after_element_open() -> None:
 
     callback_start = cpp.index("void EspAfe::gmf_event_cb_(")
     callback = cpp[callback_start : cpp.index("\n#endif", callback_start)]
-    guard = callback.index("!self->vad_enabled_.load")
-    transition = callback.index("GMF AFE voice transition")
-    assert guard < transition
+    assert callback.index("!self->vad_enabled_.load") < callback.index("GMF AFE voice transition")
 
 
 def test_esp_afe_uses_current_espressif_afe_dependencies() -> None:
     init = read("__init__.py")
     aec_init = read_aec("__init__.py")
 
-    assert 'add_idf_component(name="espressif/esp-sr", ref="^2.4.6")' in init
+    assert 'add_idf_component(name="espressif/esp-sr", ref="^2.5.3")' in init
     assert 'name="espressif/gmf_ai_audio"' in init
     assert 'repo="https://github.com/n-IA-hane/esp-gmf.git"' in init
     assert 'ref="43b1e18f2a9234393a65d4b7eba2f132b95a5a24"' in init
     assert 'path="elements/gmf_ai_audio"' in init
     assert not (AFE / "idf_components" / "gmf_ai_audio").exists()
     assert 'ref="0.8.3"' not in init
-    assert 'add_idf_component(name="espressif/esp-sr", ref="^2.4.6")' in aec_init
+    assert 'add_idf_component(name="espressif/esp-sr", ref="^2.5.3")' in aec_init
     assert 'ref="^2.4.4"' not in aec_init
 
 
@@ -166,76 +167,6 @@ def test_afe_rebuild_timeout_never_destroys_a_busy_instance() -> None:
     assert "return false;" in rebuild[abort:detach]
     wait = rebuild[rebuild.index("this->process_drain_waiter_.store(waiter") : timeout]
     assert wait.count("this->process_busy_.load(std::memory_order_seq_cst)") >= 2
-
-
-def test_direct_fetch_worker_is_persistent_event_driven_and_atomic() -> None:
-    cpp = read("esp_afe.cpp")
-    header = read("esp_afe.h")
-    worker = cpp[
-        cpp.index("void EspAfe::direct_fetch_task_loop_()") :
-        cpp.index("\nbool EspAfe::prepare_direct_fetch_task_()")
-    ]
-
-    assert "while (true)" in worker
-    assert "ulTaskNotifyTake(pdTRUE, portMAX_DELAY);" in worker
-    assert "xSemaphoreTake(this->direct_feed_signal_, portMAX_DELAY)" in worker
-    assert "xSemaphoreTake(this->direct_feed_signal_, fetch_timeout)" not in worker
-    assert "direct_fetch_running_.load(std::memory_order_acquire)" in worker
-    assert "std::atomic<bool> direct_fetch_running_{false};" in header
-    assert "std::atomic<bool> direct_fetch_quiesced_{true};" in header
-    assert "vTaskDelay(" not in cpp
-    # A finite timeout is retained only for ESP-SR fetch_with_delay() after a
-    # real feed event; it is a fault watchdog, never the worker cadence.
-    assert "fetch_with_delay(this->direct_data_, fetch_timeout)" in worker
-    stop = cpp[cpp.index("bool EspAfe::stop_direct_fetch_task_()") : cpp.index("\nvoid EspAfe::destroy_direct_fetch_task_()")]
-    assert stop.count("direct_fetch_quiesced_.load(std::memory_order_acquire)") >= 3
-
-
-def test_direct_fetch_stop_before_first_run_still_publishes_quiescence() -> None:
-    cpp = read("esp_afe.cpp")
-    worker = cpp[
-        cpp.index("void EspAfe::direct_fetch_task_loop_()") :
-        cpp.index("\nbool EspAfe::prepare_direct_fetch_task_()")
-    ]
-
-    wake = worker.index("ulTaskNotifyTake(pdTRUE, portMAX_DELAY);")
-    inner = worker.index("while (this->direct_fetch_running_.load", wake)
-    assert "continue;" not in worker[wake:inner]
-
-
-def test_direct_fetch_static_stack_uses_esp_idf_byte_depth() -> None:
-    cpp = read("esp_afe.cpp")
-    header = read("esp_afe.h")
-
-    assert "kDirectFetchTaskStackBytes = 4096;" in header
-    assert "(kDirectFetchTaskStackBytes + sizeof(StackType_t) - 1) / sizeof(StackType_t)" in header
-    assert "heap_caps_malloc(kDirectFetchTaskStackWords * sizeof(StackType_t)" in cpp
-    assert '"afe_fetch", kDirectFetchTaskStackBytes,' in cpp
-    assert "const int core = this->fetch_task_core_;" in cpp
-    assert "const int prio = this->fetch_task_priority_;" in cpp
-    prepare = cpp[
-        cpp.index("bool EspAfe::prepare_direct_fetch_task_()") :
-        cpp.index("\nbool EspAfe::start_direct_fetch_task_()")
-    ]
-    failure = prepare[prepare.index("if (this->direct_fetch_task_handle_ == nullptr)") :]
-    assert "heap_caps_free(this->direct_fetch_task_stack_);" in failure
-    assert "this->direct_fetch_task_stack_ = nullptr;" in failure
-
-
-def test_persistent_direct_fetch_worker_is_destroyed_only_after_quiescing() -> None:
-    cpp = read("esp_afe.cpp")
-    header = read("esp_afe.h")
-
-    destroy = cpp[
-        cpp.index("void EspAfe::destroy_direct_fetch_task_()") :
-        cpp.index("\n#endif", cpp.index("void EspAfe::destroy_direct_fetch_task_()"))
-    ]
-    assert "void destroy_direct_fetch_task_();" in header
-    assert destroy.index("stop_direct_fetch_task_()") < destroy.index("vTaskDelete")
-    delete = destroy.index("vTaskDelete")
-    assert "heap_caps_free" in destroy[delete:]
-    destructor = cpp[cpp.index("EspAfe::~EspAfe()") :]
-    assert "this->destroy_direct_fetch_task_();" in destructor
 
 
 def test_rebuild_state_is_published_without_racing_live_afe_fields() -> None:

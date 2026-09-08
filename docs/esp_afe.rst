@@ -13,9 +13,10 @@ It provides AEC, noise suppression, VAD, AGC and optional dual-mic Speech
 Enhancement/BSS. Use it when a product needs more than standalone echo
 cancellation.
 
-Single-mic profiles call the ESP-SR AFE feed/fetch interface directly from the
-parent audio task. Dual-mic profiles use the fetched GMF AFE manager/pipeline
-and complete-frame bridge rings.
+Single-mic and dual-mic profiles use the GMF AFE manager/pipeline. Its feed
+worker owns DSP processing, while the parent audio task retains its hardware
+cadence. Input staging and the existing output byte stream adapt changes in
+ESP-SR block sizes without resizing the live I2S/DMA frame.
 
 .. code-block:: yaml
 
@@ -59,13 +60,16 @@ Configuration variables:
 - **vad_mute_playback**, **vad_enable_channel_trigger**, **continuous_vad**
   (*Optional*, boolean): Optional VAD playback/channel/standby behavior.
 - **agc_compression_gain**, **agc_target_level** (*Optional*, int): AGC level
-  controls. NS/AGC changes rebuild the AFE.
+  controls. NS/AGC changes rebuild the AFE. ESP-SR 2.5.3 omits AGC from its
+  effective dual-microphone graph, so dual-mic profiles apply the public
+  WebRTC AGC to complete processed mono frames after the AFE. This adds a
+  fixed 10 ms causal delay.
 - **memory_alloc_mode** (*Optional*, string): ``more_internal``,
   ``internal_psram_balance`` or ``more_psram``. Defaults to ``more_psram``.
 - **afe_linear_gain** (*Optional*, float): Output multiplier, ``0.1`` to
   ``10.0``. Defaults to ``1.0``.
 - **ringbuf_size** (*Optional*, int): Requested ESP-SR ring size, ``2`` to
-  ``32``. The direct single-mic path normalizes values below ``16`` to ``16``.
+  ``32``. The single-mic configuration normalizes values below ``16`` to ``16``.
 - **task_core** / **task_priority** (*Optional*, int): ESP-SR SE/BSS worker
   placement.
 - **feed_task_core**, **feed_task_priority**, **feed_task_stack_size** and the

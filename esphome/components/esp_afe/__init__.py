@@ -260,20 +260,16 @@ async def to_code(config):
     # downstream audio consumers do not inherit an older transitive esp-dsp pin.
     add_idf_component(name="espressif/esp-dsp", ref="^1.8.0")
 
-    if config[CONF_MIC_NUM] <= 1:
-        cg.add_define("USE_ESP_AFE_DIRECT_PATH")
-        add_idf_component(name="espressif/esp-sr", ref="^2.4.6")
-    if config[CONF_MIC_NUM] >= 2:
-        cg.add_define("USE_ESP_AFE_GMF_PATH")
-        add_idf_component(
-            name="espressif/gmf_ai_audio",
-            repo="https://github.com/n-IA-hane/esp-gmf.git",
-            # Pin the P4 realtime-stack fix so an existing IDF component lock
-            # cannot silently retain the older branch head.
-            ref="43b1e18f2a9234393a65d4b7eba2f132b95a5a24",
-            path="elements/gmf_ai_audio",
-        )
-        add_idf_component(name="espressif/esp-sr", ref="^2.4.6")
+    cg.add_define("USE_ESP_AFE_GMF_PATH")
+    add_idf_component(
+        name="espressif/gmf_ai_audio",
+        repo="https://github.com/n-IA-hane/esp-gmf.git",
+        # Pin the P4 realtime-stack fix so an existing IDF component lock
+        # cannot silently retain the older branch head.
+        ref="43b1e18f2a9234393a65d4b7eba2f132b95a5a24",
+        path="elements/gmf_ai_audio",
+    )
+    add_idf_component(name="espressif/esp-sr", ref="^2.5.3")
 
 
 @automation.register_action(

@@ -130,6 +130,7 @@ and gain. These are the knobs users most often need when building a new target:
 |---|---|
 | `sample_rate` / `output_sample_rate` | Run codec/speaker at the bus rate while feeding mic/AEC/VA at the processor rate. |
 | `codec.input` / `codec.output` | Select `es7210`, `es8311`, `es8388`, `es8374` or `es8389` through `esp_codec_dev`. |
+| `codec.i2c_id` | Select a native I2C controller. Multiplexer channels are not supported by the codec device identity contract. |
 | `rx_bus` / `tx_bus` | Use separate I2S controllers for discrete mic and amplifier. |
 | `bits_per_sample` / `slot_bit_width` | Required for 24/32-bit codecs and 32-bit MEMS microphones. |
 | `mic_channel` / `rx_slot_mode` | Select the actual MEMS mic slot. `rx_slot_mode: stereo` reads both STD slots and then selects `mic_channel` in software. |

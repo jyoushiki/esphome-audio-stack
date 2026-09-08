@@ -14,7 +14,7 @@
 
 namespace esphome {
 namespace i2c {
-class I2CBus;
+class InternalI2CBus;
 }  // namespace i2c
 }  // namespace esphome
 
@@ -63,7 +63,7 @@ class CodecDevBackend {
   CodecDevBackend(const CodecDevBackend &) = delete;
   CodecDevBackend &operator=(const CodecDevBackend &) = delete;
 
-  void set_i2c_bus(i2c::I2CBus *bus) { this->i2c_bus_ = bus; }
+  void set_i2c_bus(i2c::InternalI2CBus *bus) { this->i2c_bus_ = bus; }
   void set_es7210_config(const Es7210Config &config) { this->es7210_ = config; }
   void set_input_codec_config(const GenericCodecConfig &config) { this->input_codec_ = config; }
   void set_output_codec_config(const GenericCodecConfig &config) { this->output_codec_ = config; }
@@ -101,7 +101,7 @@ class CodecDevBackend {
                                              const audio_codec_ctrl_if_t **ctrl);
   void destroy_codecs_();
 
-  i2c::I2CBus *i2c_bus_{nullptr};
+  i2c::InternalI2CBus *i2c_bus_{nullptr};
   Es7210Config es7210_{};
   GenericCodecConfig input_codec_{};
   GenericCodecConfig output_codec_{};
