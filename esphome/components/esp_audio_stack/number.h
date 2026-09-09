@@ -3,7 +3,9 @@
 #if defined(USE_ESP32) && defined(USE_NUMBER)
 
 #include "esphome/components/number/number.h"
+#ifdef USE_SPEAKER
 #include "esphome/components/speaker/speaker.h"
+#endif
 #include "esphome/core/component.h"
 #include "esphome/core/preferences.h"
 #include "esp_audio_stack.h"
@@ -71,7 +73,9 @@ class MicGainNumber final : public number::Number, public Component {
 class MasterVolumeNumber final : public number::Number, public Component {
  public:
   void set_parent(ESPAudioStack *parent) { this->parent_ = parent; }
+#ifdef USE_SPEAKER
   void set_speaker(speaker::Speaker *speaker) { this->speaker_ = speaker; }
+#endif
 
   void setup() override {
     float value;
@@ -82,14 +86,16 @@ class MasterVolumeNumber final : public number::Number, public Component {
       this->publish_state(value);
     } else if (this->parent_ != nullptr) {
       this->publish_state(this->parent_->get_master_volume() * 100.0f);
-    } else if (this->speaker_ != nullptr) {
+    }
+#ifdef USE_SPEAKER
+    else if (this->speaker_ != nullptr) {
       this->publish_state(this->speaker_->get_volume() * 100.0f);
     }
+#endif
   }
 
   void dump_config() override {
-    log_config("audio_stack.master_volume", "Master Volume Number%s",
-               this->speaker_ != nullptr ? " (speaker-backed)" : "");
+    log_config("audio_stack.master_volume", "Master Volume Number");
   }
 
  protected:
@@ -107,13 +113,20 @@ class MasterVolumeNumber final : public number::Number, public Component {
     float volume = value / 100.0f;
     if (this->parent_ != nullptr) {
       this->parent_->set_master_volume(volume);
-    } else if (this->speaker_ != nullptr) {
+    }
+#ifdef USE_SPEAKER
+    else if (this->speaker_ != nullptr) {
       this->speaker_->set_volume(volume);
     }
+#endif
   }
 
   void control(float value) override {
-    if (this->speaker_ != nullptr || this->parent_ != nullptr) {
+    if (this->parent_ != nullptr
+#ifdef USE_SPEAKER
+        || this->speaker_ != nullptr
+#endif
+    ) {
       value = clamp_percent(value);
       this->apply_(value);
       this->publish_state(value);
@@ -122,7 +135,9 @@ class MasterVolumeNumber final : public number::Number, public Component {
   }
 
   ESPAudioStack *parent_{nullptr};
+#ifdef USE_SPEAKER
   speaker::Speaker *speaker_{nullptr};
+#endif
   ESPPreferenceObject pref_;
 };
 
