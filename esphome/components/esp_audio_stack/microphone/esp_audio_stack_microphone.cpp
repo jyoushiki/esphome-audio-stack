@@ -15,15 +15,6 @@ static const char *const TAG = "audio_stack.mic";
 void ESPAudioStackMicrophone::setup() {
   ESP_LOGCONFIG(TAG, "Setting up ESP Audio Stack Microphone...");
 
-  // Counting semaphore for listener refcounting (take to decrement, give
-  // to increment). Initial count == max count == MAX_LISTENERS.
-  this->active_listeners_semaphore_ = xSemaphoreCreateCounting(MAX_LISTENERS, MAX_LISTENERS);
-  if (this->active_listeners_semaphore_ == nullptr) {
-    ESP_LOGE(TAG, "Failed to create semaphore");
-    this->mark_failed();
-    return;
-  }
-
   // Configure audio stream info for 16-bit mono PCM at output rate
   // When rate conversion is active, mic delivers data at output_sample_rate (e.g. 16 kHz).
   // AudioStreamInfo constructor: (bits_per_sample, channels, sample_rate)
@@ -54,38 +45,31 @@ void ESPAudioStackMicrophone::dump_config() {
 void ESPAudioStackMicrophone::start() {
   if (this->is_failed())
     return;
-
-  // Take semaphore to register as active listener
-  if (xSemaphoreTake(this->active_listeners_semaphore_, 0) != pdTRUE) {
-    ESP_LOGW(TAG, "No free semaphore slots");
-    return;
+  uint32_t count = this->active_listeners_.load(std::memory_order_relaxed);
+  while (count < MAX_LISTENERS) {
+    if (this->active_listeners_.compare_exchange_weak(count, count + 1, std::memory_order_acq_rel,
+                                                    std::memory_order_relaxed)) {
+      this->enable_loop_soon_any_context();
+      return;
+    }
   }
+  ESP_LOGW(TAG, "No free listener slots");
+}
 
-  // Native ESPHome microphone semantics are asynchronous: start() only
-  // registers interest; loop() performs the state transition.
-  this->enable_loop_soon_any_context();
+bool ESPAudioStackMicrophone::release_listener_() {
+  uint32_t count = this->active_listeners_.load(std::memory_order_relaxed);
+  while (count != 0) {
+    if (this->active_listeners_.compare_exchange_weak(count, count - 1, std::memory_order_acq_rel,
+                                                    std::memory_order_relaxed))
+      return count == 1;
+  }
+  return false;
 }
 
 void ESPAudioStackMicrophone::stop() {
-  if (this->is_failed() || this->active_listeners_semaphore_ == nullptr)
+  if (this->is_failed() || !this->release_listener_())
     return;
-
-  if (uxSemaphoreGetCount(this->active_listeners_semaphore_) >= MAX_LISTENERS)
-    return;
-
-  // Give semaphore to unregister as listener. Do this even if loop() has not
-  // transitioned to STATE_RUNNING yet, otherwise start()+immediate stop() leaks
-  // a listener slot and keeps the parent mic path alive.
-  xSemaphoreGive(this->active_listeners_semaphore_);
-
-  if (uxSemaphoreGetCount(this->active_listeners_semaphore_) < MAX_LISTENERS)
-    return;
-
-  if (this->state_ == microphone::STATE_STOPPED) {
-    return;
-  }
-
-  // loop() will process the stop edge; do not block the ESPHome main loop.
+  // Only the final consumer requests a stop; the main loop owns hardware.
   this->enable_loop_soon_any_context();
 }
 
@@ -134,16 +118,15 @@ void ESPAudioStackMicrophone::loop() {
     ESP_LOGI(TAG, "I2S audio path recovered");
   }
 
-  // Check semaphore count to decide when to start/stop
-  UBaseType_t count = uxSemaphoreGetCount(this->active_listeners_semaphore_);
+  const uint32_t count = this->active_listeners_.load(std::memory_order_acquire);
 
-  // Start the microphone if any semaphores are taken (listeners active)
-  if ((count < MAX_LISTENERS) && (this->state_ == microphone::STATE_STOPPED)) {
+  // Start the microphone when at least one consumer requested capture.
+  if ((count > 0) && (this->state_ == microphone::STATE_STOPPED)) {
     this->state_ = microphone::STATE_STARTING;
   }
 
-  // Stop the microphone if all semaphores are returned (no listeners)
-  if ((count == MAX_LISTENERS) && (this->state_ == microphone::STATE_RUNNING)) {
+  // Stop the microphone after the final consumer releases capture.
+  if ((count == 0) && (this->state_ == microphone::STATE_RUNNING)) {
     this->state_ = microphone::STATE_STOPPING;
   }
 
@@ -152,21 +135,21 @@ void ESPAudioStackMicrophone::loop() {
       if (this->status_has_error() && !this->i2s_error_latched_) {
         break;
       }
-      if (uxSemaphoreGetCount(this->active_listeners_semaphore_) >= MAX_LISTENERS) {
+      if (this->active_listeners_.load(std::memory_order_acquire) == 0) {
         this->state_ = microphone::STATE_STOPPED;
         break;
       }
       ESP_LOGI(TAG, "Microphone started");
       if (!this->parent_->register_mic_consumer(this)) {
         ESP_LOGW(TAG, "Parent audio stack refused mic consumer registration");
-        xSemaphoreGive(this->active_listeners_semaphore_);
+        this->release_listener_();
         this->state_ = microphone::STATE_STOPPED;
         break;
       }
       if (!this->parent_->is_running()) {
         ESP_LOGW(TAG, "Parent audio stack failed to start; aborting microphone start");
         this->parent_->unregister_mic_consumer(this);
-        xSemaphoreGive(this->active_listeners_semaphore_);
+        this->release_listener_();
         this->state_ = microphone::STATE_STOPPED;
         break;
       }

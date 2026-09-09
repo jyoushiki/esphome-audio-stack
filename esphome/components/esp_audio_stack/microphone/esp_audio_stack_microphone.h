@@ -7,10 +7,10 @@
 #include "esphome/components/microphone/microphone.h"
 #include "../esp_audio_stack.h"
 
+#include <atomic>
 #include <vector>
 
 #include <freertos/FreeRTOS.h>
-#include <freertos/semphr.h>
 
 namespace esphome::esp_audio_stack {
 
@@ -32,7 +32,9 @@ class ESPAudioStackMicrophone final : public microphone::Microphone, public Comp
   std::vector<uint8_t> audio_buffer_;
 
   // Reference counting for multiple listeners (voice_assistant, wake_word, call components, etc.)
-  SemaphoreHandle_t active_listeners_semaphore_{nullptr};
+  // Valid before setup(), so early capture/stop automations remain balanced.
+  std::atomic<uint32_t> active_listeners_{0};
+  bool release_listener_();
   bool i2s_error_latched_{false};
 };
 

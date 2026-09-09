@@ -15,12 +15,6 @@ static const char *const TAG = "audio_stack.spk";
 void ESPAudioStackSpeaker::setup() {
   ESP_LOGCONFIG(TAG, "Setting up ESP Audio Stack Speaker...");
 
-  this->active_listeners_semaphore_ = xSemaphoreCreateCounting(MAX_LISTENERS, MAX_LISTENERS);
-  if (this->active_listeners_semaphore_ == nullptr) {
-    ESP_LOGE(TAG, "Failed to create semaphore");
-    this->mark_failed();
-    return;
-  }
 
   this->audio_stream_info_ =
       audio::AudioStreamInfo(16, this->parent_->get_speaker_channels(), this->parent_->get_sample_rate());
@@ -63,11 +57,6 @@ void ESPAudioStackSpeaker::start() {
                                                           std::memory_order_relaxed))
     return;
 
-  if (xSemaphoreTake(this->active_listeners_semaphore_, 0) != pdTRUE) {
-    this->listener_registered_.store(false, std::memory_order_release);
-    ESP_LOGW(TAG, "No free semaphore slots");
-    return;
-  }
   this->enable_loop_soon_any_context();
 }
 
@@ -82,7 +71,6 @@ void ESPAudioStackSpeaker::stop() {
   if (!this->listener_registered_.exchange(false, std::memory_order_acq_rel))
     return;
 
-  xSemaphoreGive(this->active_listeners_semaphore_);
   this->enable_loop_soon_any_context();
 }
 
@@ -198,13 +186,13 @@ void ESPAudioStackSpeaker::loop() {
     ESP_LOGI(TAG, "I2S audio path recovered");
   }
 
-  UBaseType_t count = uxSemaphoreGetCount(this->active_listeners_semaphore_);
+  const bool requested = this->listener_registered_.load(std::memory_order_acquire);
 
-  if ((count < MAX_LISTENERS) && (this->state_ == speaker::STATE_STOPPED)) {
+  if (requested && (this->state_ == speaker::STATE_STOPPED)) {
     this->state_ = speaker::STATE_STARTING;
   }
 
-  if ((count == MAX_LISTENERS) && (this->state_ == speaker::STATE_RUNNING)) {
+  if (!requested && (this->state_ == speaker::STATE_RUNNING)) {
     this->state_ = speaker::STATE_STOPPING;
   }
 
@@ -213,7 +201,7 @@ void ESPAudioStackSpeaker::loop() {
       if (this->status_has_error() && !this->i2s_error_latched_) {
         break;
       }
-      if (uxSemaphoreGetCount(this->active_listeners_semaphore_) == MAX_LISTENERS) {
+      if (!this->listener_registered_.load(std::memory_order_acquire)) {
         this->state_ = speaker::STATE_STOPPED;
         break;
       }

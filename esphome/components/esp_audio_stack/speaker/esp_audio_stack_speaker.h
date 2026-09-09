@@ -46,7 +46,6 @@ class ESPAudioStackSpeaker final : public speaker::Speaker, public Component, pu
   optional<uint32_t> timeout_;
   uint32_t last_write_ms_{0};
   // Reference counting for multiple listeners (media_player, voice_assistant, call components, etc.)
-  SemaphoreHandle_t active_listeners_semaphore_{nullptr};
   // Idempotency guard: prevents multiple xSemaphoreTake per stream session.
   // Without this, play() calling start() before loop() sets STATE_RUNNING causes
   // semaphore count to leak (take N times, give 1 time → never reaches MAX_LISTENERS
