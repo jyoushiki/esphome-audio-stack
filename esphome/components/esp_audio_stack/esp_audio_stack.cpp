@@ -1460,8 +1460,8 @@ void ESPAudioStack::start() {
 
   ESP_LOGI(TAG, "Starting audio stack...");
 
-  // setup() normally pre-creates the task. Manually constructed test instances
-  // can still enter through start(), so create the task here if needed.
+  // Reuse the task created by setup(), or create it lazily if start() is
+  // entered before a task has been allocated.
   if (this->audio_task_handle_ == nullptr) {
     const BaseType_t core = this->task_core_ >= 0 ? this->task_core_ : tskNO_AFFINITY;
     if (!start_pinned_task(audio_task, "audio_stack", this->task_stack_size_, this, this->task_priority_, core,
@@ -1673,7 +1673,7 @@ void ESPAudioStack::stop_speaker() {
   this->request_speaker_reset_.store(true, std::memory_order_relaxed);
   // If no mic consumers either, tear down the audio stack pipeline. This signals
   // the audio processor (e.g. AFE) it can suspend its workers and parks the
-  // audio task; channels stay configured for fast wake on the next start.
+  // audio task. Once it is idle, loop() deletes the I2S channels.
   if (!this->has_mic_consumers_.load(std::memory_order_relaxed)) {
     ESP_LOGI(TAG, "Audio stack going idle (speaker stopped, no mic consumers)");
 #ifdef USE_AUDIO_PROCESSOR

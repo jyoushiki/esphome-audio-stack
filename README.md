@@ -1,5 +1,7 @@
 # ESPHome Audio Stack
 
+Current stable release: [2026.9.2](https://github.com/n-IA-hane/esphome-audio-stack/releases/tag/v2026.9.2).
+
 A full-duplex audio backend for ESPHome voice devices: I2S and codec ownership,
 software echo cancellation, the complete Espressif AFE pipeline, and standard
 ESPHome microphone and speaker surfaces on top.
@@ -155,7 +157,7 @@ Full-duplex audio only:
 
 ```yaml
 external_components:
-  - source: github://n-IA-hane/esphome-audio-stack@v2026.9.0
+  - source: github://n-IA-hane/esphome-audio-stack@main
     components: [esp_audio_stack]
 ```
 
@@ -163,7 +165,7 @@ With standalone AEC:
 
 ```yaml
 external_components:
-  - source: github://n-IA-hane/esphome-audio-stack@v2026.9.0
+  - source: github://n-IA-hane/esphome-audio-stack@main
     components: [esp_audio_stack, esp_aec]
 ```
 
@@ -171,7 +173,7 @@ With full AFE:
 
 ```yaml
 external_components:
-  - source: github://n-IA-hane/esphome-audio-stack@v2026.9.0
+  - source: github://n-IA-hane/esphome-audio-stack@main
     components: [esp_audio_stack, esp_afe]
 ```
 
